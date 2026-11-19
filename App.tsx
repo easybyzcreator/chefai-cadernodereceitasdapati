@@ -72,6 +72,26 @@ const isRecipeAuthor = (recipe: Recipe | null | undefined, profile: Profile | nu
   return (recipe.authorName || '').trim().toLowerCase() === (profile.name || '').trim().toLowerCase();
 };
 
+const isPatiProfile = (profile: Pick<Profile, 'name'> | null | undefined): boolean =>
+  normalizeText(profile?.name || '') === 'pati';
+
+const hashProfilePassword = async (password: string): Promise<string> => {
+  const trimmed = password.trim();
+  if (!trimmed) return '';
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle) {
+      const encoded = new TextEncoder().encode(`pati_receitas:${trimmed}`);
+      const digest = await crypto.subtle.digest('SHA-256', encoded);
+      return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+  } catch {
+    // fallback below
+  }
+  return `plain:${trimmed}`;
+};
+
 const compressImage = (base64: string, maxWidth = 1024, quality = 0.82): Promise<string> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -120,6 +140,14 @@ const App: React.FC = () => {
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfilePhoto, setNewProfilePhoto] = useState('');
   const [newProfileBirth, setNewProfileBirth] = useState('');
+  const [newProfilePassword, setNewProfilePassword] = useState('');
+  const [removeProfilePassword, setRemoveProfilePassword] = useState(false);
+  const [passwordChallenge, setPasswordChallenge] = useState<{
+    profile: Profile;
+    action: 'enter' | 'edit' | 'delete';
+  } | null>(null);
+  const [passwordChallengeInput, setPasswordChallengeInput] = useState('');
+  const [passwordChallengeError, setPasswordChallengeError] = useState(false);
   const [editingRecipe, setEditingRecipe] = useState<Recipe | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
 
@@ -129,7 +157,7 @@ const App: React.FC = () => {
     const savedProfileId = localStorage.getItem('active_profile_id');
     if (savedProfileId && profiles.length > 0 && !activeProfile) {
       const found = profiles.find(p => p.id === savedProfileId);
-      if (found) {
+      if (found && !found.passwordHash) {
         setActiveProfile(found);
       }
     }
@@ -169,9 +197,13 @@ const App: React.FC = () => {
   }, [view, showBirthdays, editingRecipe?.id, categoryFilter]);
 
   const sortedProfiles = useMemo(() => {
-    return [...profiles].sort((a, b) =>
-      (a.name || '').trim().localeCompare((b.name || '').trim(), 'pt-BR', { sensitivity: 'base' })
-    );
+    return [...profiles].sort((a, b) => {
+      const aIsPati = isPatiProfile(a);
+      const bIsPati = isPatiProfile(b);
+      if (aIsPati && !bIsPati) return -1;
+      if (!aIsPati && bIsPati) return 1;
+      return (a.name || '').trim().localeCompare((b.name || '').trim(), 'pt-BR', { sensitivity: 'base' });
+    });
   }, [profiles]);
 
   const sortedRecipes = useMemo(() => {
@@ -215,10 +247,24 @@ const App: React.FC = () => {
       alert("Por favor, informe a data de nascimento completa no formato DD/MM/AAAA.");
       return;
     }
+
+    const canHavePassword = isPatiProfile(editingProfile) || isPatiProfile({ name: newProfileName });
+    let nextPasswordHash = '';
+    if (canHavePassword) {
+      if (removeProfilePassword) {
+        nextPasswordHash = '';
+      } else if (newProfilePassword.trim()) {
+        nextPasswordHash = await hashProfilePassword(newProfilePassword);
+      } else if (editingProfile?.passwordHash) {
+        nextPasswordHash = editingProfile.passwordHash;
+      }
+    }
+
     const profileData = {
       name: newProfileName.trim(),
       photoUrl: newProfilePhoto || DEFAULT_PROFILE_IMAGE,
-      birthDate: isoBirthDate
+      birthDate: isoBirthDate,
+      passwordHash: nextPasswordHash,
     };
     try {
       if (editingProfile) {
@@ -238,14 +284,71 @@ const App: React.FC = () => {
     setNewProfileName('');
     setNewProfilePhoto('');
     setNewProfileBirth('');
+    setNewProfilePassword('');
+    setRemoveProfilePassword(false);
   };
 
-  const handleEditProfileClick = (p: Profile) => {
+  const openProfileEditor = (p: Profile) => {
     setEditingProfile(p);
     setNewProfileName(p.name);
     setNewProfilePhoto(p.photoUrl);
     setNewProfileBirth(isoToBrDate(p.birthDate || ''));
+    setNewProfilePassword('');
+    setRemoveProfilePassword(false);
     setView(AppView.PROFILE_EDIT);
+  };
+
+  const enterProfile = (p: Profile) => {
+    setActiveProfile(p);
+    if (p.passwordHash) {
+      localStorage.removeItem('active_profile_id');
+    } else {
+      localStorage.setItem('active_profile_id', p.id);
+    }
+    setShowBirthdays(false);
+    setView(AppView.HOME);
+  };
+
+  const handleProfileAction = (p: Profile, action: 'enter' | 'edit' | 'delete') => {
+    if (isPatiProfile(p) && p.passwordHash) {
+      setPasswordChallenge({ profile: p, action });
+      setPasswordChallengeInput('');
+      setPasswordChallengeError(false);
+      return;
+    }
+    if (action === 'enter') {
+      enterProfile(p);
+    } else if (action === 'edit') {
+      openProfileEditor(p);
+    } else {
+      handleDeleteProfile(p.id);
+    }
+  };
+
+  const handleConfirmProfilePassword = async () => {
+    if (!passwordChallenge) return;
+    const { profile, action } = passwordChallenge;
+    const enteredHash = await hashProfilePassword(passwordChallengeInput);
+    const matches =
+      Boolean(passwordChallengeInput.trim()) &&
+      (enteredHash === profile.passwordHash || `plain:${passwordChallengeInput.trim()}` === profile.passwordHash);
+
+    if (!matches) {
+      setPasswordChallengeError(true);
+      return;
+    }
+
+    setPasswordChallenge(null);
+    setPasswordChallengeInput('');
+    setPasswordChallengeError(false);
+
+    if (action === 'enter') {
+      enterProfile(profile);
+    } else if (action === 'edit') {
+      openProfileEditor(profile);
+    } else {
+      await handleDeleteProfile(profile.id);
+    }
   };
 
   const handleDeleteProfile = async (profileId: string) => {
@@ -427,12 +530,7 @@ const App: React.FC = () => {
             {sortedProfiles.map(p => (
               <div key={p.id} className="relative group flex flex-col items-center">
                 <button
-                  onClick={() => {
-                    setActiveProfile(p);
-                    localStorage.setItem('active_profile_id', p.id);
-                    setShowBirthdays(false);
-                    setView(AppView.HOME);
-                  }}
+                  onClick={() => handleProfileAction(p, 'enter')}
                   className="flex flex-col items-center w-full focus:outline-none"
                 >
                   <div className="p-1.5 rounded-full bg-[#fffcf7] border border-[#522f19]/15 group-hover:border-[#AF5E33] shadow-sm transition-all mb-3">
@@ -444,20 +542,25 @@ const App: React.FC = () => {
                       className="w-24 h-24 sm:w-28 sm:h-28 rounded-full object-cover transition-transform duration-300 group-hover:scale-105"
                     />
                   </div>
-                  <span className="font-display font-semibold text-lg text-[#522f19] group-hover:text-[#AF5E33] transition-colors">
-                    {p.name}
+                  <span className="font-display font-semibold text-lg text-[#522f19] group-hover:text-[#AF5E33] transition-colors inline-flex items-center gap-1.5">
+                    <span>{p.name}</span>
+                    {isPatiProfile(p) && p.passwordHash && (
+                      <svg className="w-3.5 h-3.5 text-[#AF5E33] shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-label="Perfil protegido por senha">
+                        <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6z" />
+                      </svg>
+                    )}
                   </span>
                 </button>
                 <div className="absolute top-0 right-1 sm:right-2 flex flex-col gap-1.5">
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleEditProfileClick(p); }}
+                    onClick={(e) => { e.stopPropagation(); handleProfileAction(p, 'edit'); }}
                     title="Editar perfil"
                     className="bg-[#fffcf7] shadow-sm border border-[#522f19]/15 w-8 h-8 rounded-full text-xs flex items-center justify-center hover:border-[#AF5E33] hover:text-[#AF5E33] transition-colors"
                   >
                     ✏️
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteProfile(p.id); }}
+                    onClick={(e) => { e.stopPropagation(); handleProfileAction(p, 'delete'); }}
                     title="Excluir perfil"
                     className="bg-[#fffcf7] shadow-sm border border-[#522f19]/15 w-8 h-8 rounded-full text-xs flex items-center justify-center hover:border-red-500 hover:text-red-600 transition-colors"
                   >
@@ -472,6 +575,8 @@ const App: React.FC = () => {
                 setNewProfileName('');
                 setNewProfilePhoto('');
                 setNewProfileBirth('');
+                setNewProfilePassword('');
+                setRemoveProfilePassword(false);
                 setView(AppView.PROFILE_CREATE);
               }}
               className="flex flex-col items-center group"
@@ -486,6 +591,73 @@ const App: React.FC = () => {
               </span>
             </button>
           </div>
+
+          {passwordChallenge && (
+            <div className="fixed inset-0 bg-[#522f19]/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
+              <div className="bg-[#fffcf7] rounded-3xl p-7 max-w-sm w-full space-y-5 shadow-2xl border border-[#522f19]/15 text-center fade-in">
+                <img
+                  src={passwordChallenge.profile.photoUrl || DEFAULT_PROFILE_IMAGE}
+                  alt={passwordChallenge.profile.name}
+                  referrerPolicy="no-referrer"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
+                  className="w-20 h-20 rounded-full object-cover mx-auto border-2 border-[#AF5E33] shadow-sm"
+                />
+                <div className="space-y-1">
+                  <h3 className="text-xl font-display font-bold text-[#522f19]">
+                    Perfil de {passwordChallenge.profile.name}
+                  </h3>
+                  <p className="text-xs text-[#522f19]/70">
+                    {passwordChallenge.action === 'enter'
+                      ? 'Digite a senha para acessar este perfil e gerenciar suas receitas.'
+                      : passwordChallenge.action === 'edit'
+                        ? 'Digite a senha para editar este perfil.'
+                        : 'Digite a senha para confirmar a exclusão deste perfil.'}
+                  </p>
+                </div>
+                <input
+                  type="password"
+                  autoFocus
+                  placeholder="Digite a senha..."
+                  className={`w-full p-3.5 rounded-2xl border bg-[#f9f5ef] text-[#522f19] text-sm outline-none transition-all ${
+                    passwordChallengeError
+                      ? 'border-red-500 bg-red-50 animate-shake'
+                      : 'border-[#522f19]/20 focus:border-[#AF5E33]'
+                  }`}
+                  value={passwordChallengeInput}
+                  onChange={e => {
+                    setPasswordChallengeInput(e.target.value);
+                    setPasswordChallengeError(false);
+                  }}
+                  onKeyDown={e => e.key === 'Enter' && handleConfirmProfilePassword()}
+                />
+                {passwordChallengeError && (
+                  <p className="text-xs font-semibold text-red-600">
+                    Senha incorreta. Tente novamente.
+                  </p>
+                )}
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPasswordChallenge(null);
+                      setPasswordChallengeInput('');
+                      setPasswordChallengeError(false);
+                    }}
+                    className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmProfilePassword}
+                    className="flex-1 py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95"
+                  >
+                    Entrar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
@@ -537,6 +709,42 @@ const App: React.FC = () => {
                   onChange={e => setNewProfileBirth(maskBrDate(e.target.value))}
                 />
               </div>
+              {(isPatiProfile(editingProfile) || isPatiProfile({ name: newProfileName })) && (
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-[#522f19]/70 px-1 flex items-center justify-between">
+                    <span>Senha do Perfil (Opcional)</span>
+                    {editingProfile?.passwordHash && !removeProfilePassword && (
+                      <span className="text-[11px] font-semibold text-[#AF5E33]">Protegido</span>
+                    )}
+                  </label>
+                  <input
+                    type="password"
+                    disabled={removeProfilePassword}
+                    placeholder={
+                      editingProfile?.passwordHash
+                        ? 'Nova senha (deixe vazio para manter a atual)'
+                        : 'Deixe vazio para entrar sem senha'
+                    }
+                    className="w-full p-4 border border-[#522f19]/15 bg-[#f9f5ef] text-[#522f19] rounded-2xl outline-none focus:border-[#AF5E33] disabled:opacity-50"
+                    value={newProfilePassword}
+                    onChange={e => setNewProfilePassword(e.target.value)}
+                  />
+                  {editingProfile?.passwordHash && (
+                    <label className="flex items-center gap-2 text-xs text-[#522f19]/75 px-1 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={removeProfilePassword}
+                        onChange={e => {
+                          setRemoveProfilePassword(e.target.checked);
+                          if (e.target.checked) setNewProfilePassword('');
+                        }}
+                        className="accent-[#AF5E33] rounded"
+                      />
+                      <span>Remover senha deste perfil</span>
+                    </label>
+                  )}
+                </div>
+              )}
               <button
                 onClick={handleSaveProfile}
                 className="w-full py-4 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold shadow-sm transition-colors"
@@ -1189,7 +1397,7 @@ const RecipeDetailView = ({
                 <path d="M4 6h2v2H4V6zm0 5h2v2H4v-2zm0 5h2v2H4v-2zm4-9h12v2H8V7zm0 5h12v2H8v-2zm0 5h12v2H8v-2z" />
               </svg>
             </span>
-            <span>Ingredientes &amp; Porções</span>
+            <span>Ingredientes</span>
           </h4>
           <div className="flex items-center gap-2.5">
             <button

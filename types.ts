@@ -11,6 +11,7 @@ export interface Profile {
   name: string;
   photoUrl: string;
   birthDate: string;
+  passwordHash?: string;
 }
 
 export interface Recipe {
