@@ -1,0 +1,11 @@
+{
+  "name": "https://chefai-cadernodereceitasdapati.vercel.app/",
+  "description": "Um caderno de receitas inteligente para a família da Pati, com transcrição por IA e organização automática.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

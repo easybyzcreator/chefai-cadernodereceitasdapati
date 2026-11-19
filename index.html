@@ -1,0 +1,80 @@
+
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pati - receitas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- PWA Tags -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Pati - receitas">
+    <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/easybyzcreator/imagens/a34b443188bf65664f65437413756bd217532d16/pati%20chef%20ai.png">
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/easybyzcreator/imagens/a34b443188bf65664f65437413756bd217532d16/pati%20chef%20ai.png">
+    
+    <style>
+        :root {
+            --bg-cream: #f9f5ef;
+            --surface-card: #fffcf7;
+            --surface-well: #f2ebe0;
+            --espresso: #522f19;
+            --terracotta: #AF5E33;
+        }
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #f9f5ef;
+            color: #522f19;
+            overflow-x: hidden;
+        }
+        .font-display, .font-cursive {
+            font-family: 'Playfair Display', Georgia, serif;
+        }
+        .bg-pati-orange { background-color: #AF5E33; }
+        .text-pati-orange { color: #AF5E33; }
+        .border-pati-orange { border-color: #AF5E33; }
+        
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-8px); }
+            75% { transform: translateX(8px); }
+        }
+        .animate-shake {
+            animation: shake 0.2s ease-in-out 0s 2;
+        }
+
+        .fade-in {
+            animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+    <meta name="description" content="Um caderno de receitas inteligente para a família da Pati, com transcrição por IA e organização automática.">
+    <meta property="og:title" content="Pati - receitas">
+    <meta property="og:description" content="Um caderno de receitas inteligente para a família da Pati, com transcrição por IA e organização automática.">
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
+    "firebase/": "https://esm.sh/firebase@^12.9.0/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-[#f9f5ef] text-[#522f19]">
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+
+{
+  "name": "Pati - receitas",
+  "short_name": "Pati - receitas",
+  "description": "Caderno de receitas da família da Pati",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f9f5ef",
+  "theme_color": "#AF5E33",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/easybyzcreator/imagens/a34b443188bf65664f65437413756bd217532d16/pati%20chef%20ai.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
