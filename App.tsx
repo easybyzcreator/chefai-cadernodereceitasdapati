@@ -6,7 +6,7 @@ import { db } from './services/firebase';
 import { collection, onSnapshot, doc, updateDoc, deleteDoc, query, orderBy, addDoc } from 'firebase/firestore';
 
 const FOOTER_LOGO_URL = "https://i.ibb.co/Xf0T4snH/patitour-2026-01-27-T112542-860.png";
-const WHATSAPP_GROUP_URL = "https://chat.whatsapp.com/HOJsnIu7bk1BIrp6k9MMLI?mode=gi_t";
+const WHATSAPP_GROUP_URL = "https://chat.whatsapp.com/5fbMuZ7IBZOGDwWzbVKDR8?s=sh&p=a&iam=2";
 
 const MONTH_NAMES = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
@@ -124,12 +124,23 @@ const compressImage = (base64: string, maxWidth = 1024, quality = 0.82): Promise
   });
 };
 
+const PROFILES_CACHE_KEY = 'cached_profiles_v1';
+
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(AppView.PROFILE_SELECT);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>(() => {
+    try {
+      const cached = localStorage.getItem(PROFILES_CACHE_KEY);
+      return cached ? (JSON.parse(cached) as Profile[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [activeProfile, setActiveProfile] = useState<Profile | null>(null);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [recipesLoaded, setRecipesLoaded] = useState(false);
   const [search, setSearch] = useState('');
   const [tempSearch, setTempSearch] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -152,6 +163,7 @@ const App: React.FC = () => {
   const [isAiLoading, setIsAiLoading] = useState(false);
 
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
+  const isActiveUserPati = isPatiProfile(activeProfile);
 
   useEffect(() => {
     const savedProfileId = localStorage.getItem('active_profile_id');
@@ -168,19 +180,32 @@ const App: React.FC = () => {
     const unsubProfiles = onSnapshot(qProfiles, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Profile));
       setProfiles(data);
-    });
-
-    const qRecipes = query(collection(db, "recipes"), orderBy("createdAt", "desc"));
-    const unsubRecipes = onSnapshot(qRecipes, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Recipe));
-      setRecipes(data);
+      setProfilesLoaded(true);
+      try {
+        localStorage.setItem(PROFILES_CACHE_KEY, JSON.stringify(data));
+      } catch {
+        // ignore storage quota errors
+      }
     });
 
     return () => {
       unsubProfiles();
-      unsubRecipes();
     };
   }, []);
+
+  useEffect(() => {
+    if (!profilesLoaded && view === AppView.PROFILE_SELECT) return;
+    const qRecipes = query(collection(db, "recipes"), orderBy("createdAt", "desc"));
+    const unsubRecipes = onSnapshot(qRecipes, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Recipe));
+      setRecipes(data);
+      setRecipesLoaded(true);
+    });
+
+    return () => {
+      unsubRecipes();
+    };
+  }, [profilesLoaded, view]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -217,6 +242,7 @@ const App: React.FC = () => {
     if (!queryNorm) return [];
 
     const scored = sortedRecipes
+      .filter(r => isActiveUserPati || !r.inactive)
       .map(r => {
         const titleNorm = normalizeText(r.title);
         const ingredientsNorm = normalizeText(r.ingredients);
@@ -238,7 +264,7 @@ const App: React.FC = () => {
       .map(item => item.recipe);
 
     return scored;
-  }, [tempSearch, sortedRecipes]);
+  }, [tempSearch, sortedRecipes, isActiveUserPati]);
 
   const handleSaveProfile = async () => {
     if (!newProfileName.trim()) return;
@@ -472,6 +498,17 @@ const App: React.FC = () => {
     }
   };
 
+  const toggleRecipeInactive = async (recipe: Recipe) => {
+    if (!isActiveUserPati) return;
+    try {
+      await updateDoc(doc(db, "recipes", recipe.id), {
+        inactive: !recipe.inactive,
+      });
+    } catch {
+      alert("Erro ao atualizar a visibilidade da receita.");
+    }
+  };
+
   const currentMonthIndex = new Date().getMonth();
   const currentMonthName = MONTH_NAMES[currentMonthIndex];
 
@@ -521,54 +558,64 @@ const App: React.FC = () => {
             className="w-[180px] h-[180px] rounded-full border-2 border-white mb-7 shadow-lg object-cover bg-[#fffcf7]"
           />
           <p className="font-display italic text-[#522f19]/80 text-base sm:text-lg leading-relaxed max-w-lg mb-8 px-4">
-            "Nosso caderno de receitas virou app! Agora a gente compartilha segredos de cozinha e deixa tudo guardado aqui. Vamos cozinhar juntas?"
+            Nosso caderno de receitas virou app! Agora a gente compartilha segredos de cozinha e deixa tudo guardado aqui.
           </p>
           <h2 className="text-3xl sm:text-4xl font-display font-bold text-[#522f19] mb-10">
-            Quem está cozinhando hoje?
+            Vamos cozinhar juntas?
           </h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-8 w-full max-w-xl">
-            {sortedProfiles.map(p => (
-              <div key={p.id} className="relative group flex flex-col items-center">
-                <button
-                  onClick={() => handleProfileAction(p, 'enter')}
-                  className="flex flex-col items-center w-full focus:outline-none"
-                >
-                  <div className="p-1.5 rounded-full bg-[#fffcf7] border border-[#522f19]/15 group-hover:border-[#AF5E33] shadow-sm transition-all mb-3">
-                    <img
-                      src={p.photoUrl || DEFAULT_PROFILE_IMAGE}
-                      alt={p.name}
-                      referrerPolicy="no-referrer"
-                      onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
-                      className="w-24 h-24 sm:w-28 sm:h-28 rounded-full object-cover transition-transform duration-300 group-hover:scale-105"
-                    />
-                  </div>
-                  <span className="font-display font-semibold text-lg text-[#522f19] group-hover:text-[#AF5E33] transition-colors inline-flex items-center gap-1.5">
-                    <span>{p.name}</span>
-                    {isPatiProfile(p) && p.passwordHash && (
-                      <svg className="w-3.5 h-3.5 text-[#AF5E33] shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-label="Perfil protegido por senha">
-                        <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6z" />
-                      </svg>
-                    )}
-                  </span>
-                </button>
-                <div className="absolute top-0 right-1 sm:right-2 flex flex-col gap-1.5">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleProfileAction(p, 'edit'); }}
-                    title="Editar perfil"
-                    className="bg-[#fffcf7] shadow-sm border border-[#522f19]/15 w-8 h-8 rounded-full text-xs flex items-center justify-center hover:border-[#AF5E33] hover:text-[#AF5E33] transition-colors"
-                  >
-                    ✏️
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleProfileAction(p, 'delete'); }}
-                    title="Excluir perfil"
-                    className="bg-[#fffcf7] shadow-sm border border-[#522f19]/15 w-8 h-8 rounded-full text-xs flex items-center justify-center hover:border-red-500 hover:text-red-600 transition-colors"
-                  >
-                    🗑️
-                  </button>
+            {!profilesLoaded && sortedProfiles.length === 0 ? (
+              Array.from({ length: 3 }).map((_, idx) => (
+                <div key={idx} className="flex flex-col items-center animate-pulse">
+                  <div className="w-[108px] h-[108px] sm:w-[124px] sm:h-[124px] rounded-full bg-[#e8dfd2] mb-3" />
+                  <div className="w-20 h-4 rounded-full bg-[#e8dfd2]" />
                 </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              sortedProfiles.map(p => (
+                <div key={p.id} className="relative group flex flex-col items-center">
+                  <button
+                    onClick={() => handleProfileAction(p, 'enter')}
+                    className="flex flex-col items-center w-full focus:outline-none"
+                  >
+                    <div className="p-1.5 rounded-full bg-[#fffcf7] border border-[#522f19]/15 group-hover:border-[#AF5E33] shadow-sm transition-all mb-3">
+                      <img
+                        src={p.photoUrl || DEFAULT_PROFILE_IMAGE}
+                        alt={p.name}
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
+                        className="w-24 h-24 sm:w-28 sm:h-28 rounded-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      />
+                    </div>
+                    <span className="font-display font-semibold text-lg text-[#522f19] group-hover:text-[#AF5E33] transition-colors inline-flex items-center gap-1.5">
+                      <span>{p.name}</span>
+                      {isPatiProfile(p) && p.passwordHash && (
+                        <svg className="w-3.5 h-3.5 text-[#AF5E33] shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-label="Perfil protegido por senha">
+                          <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6z" />
+                        </svg>
+                      )}
+                    </span>
+                  </button>
+                  <div className="absolute top-0 right-1 sm:right-2 flex flex-col gap-1.5">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleProfileAction(p, 'edit'); }}
+                      title="Editar perfil"
+                      className="bg-[#fffcf7] shadow-sm border border-[#522f19]/15 w-8 h-8 rounded-full text-xs flex items-center justify-center hover:border-[#AF5E33] hover:text-[#AF5E33] transition-colors"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleProfileAction(p, 'delete'); }}
+                      title="Excluir perfil"
+                      className="bg-[#fffcf7] shadow-sm border border-[#522f19]/15 w-8 h-8 rounded-full text-xs flex items-center justify-center hover:border-red-500 hover:text-red-600 transition-colors"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
             <button
               onClick={() => {
                 setEditingProfile(null);
@@ -758,6 +805,7 @@ const App: React.FC = () => {
     }
 
     const filteredRecipes = sortedRecipes.filter(r => {
+      if (!isActiveUserPati && r.inactive) return false;
       const searchNorm = normalizeText(search);
       const matchesSearch =
         !searchNorm ||
@@ -1061,7 +1109,18 @@ const App: React.FC = () => {
 
             {view === AppView.HOME && !showBirthdays && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-7">
-                {filteredRecipes.length === 0 ? (
+                {!recipesLoaded && recipes.length === 0 ? (
+                  Array.from({ length: 4 }).map((_, idx) => (
+                    <div key={idx} className="bg-[#fffcf7] rounded-[28px] p-3.5 border border-[#522f19]/12 animate-pulse">
+                      <div className="aspect-[4/3] rounded-[22px] bg-[#e8dfd2] mb-4" />
+                      <div className="px-2 space-y-2.5">
+                        <div className="h-5 w-3/4 rounded-full bg-[#e8dfd2]" />
+                        <div className="h-3.5 w-full rounded-full bg-[#e8dfd2]/80" />
+                        <div className="h-3.5 w-2/3 rounded-full bg-[#e8dfd2]/80" />
+                      </div>
+                    </div>
+                  ))
+                ) : filteredRecipes.length === 0 ? (
                   <div className="col-span-full text-center py-24 text-[#522f19]/60 font-display italic text-lg">
                     Poxa, nenhuma receita encontrada aqui! Cozinhe algo novo!
                   </div>
@@ -1078,16 +1137,56 @@ const App: React.FC = () => {
                       <div
                         key={recipe.id}
                         onClick={() => { setEditingRecipe(recipe); setView(AppView.RECIPE_DETAIL); }}
-                        className="group bg-[#fffcf7] rounded-[28px] p-3.5 border border-[#522f19]/12 shadow-[0_6px_24px_-8px_rgba(82,47,25,0.10)] hover:shadow-[0_14px_32px_-10px_rgba(82,47,25,0.18)] hover:-translate-y-0.5 transition-all duration-300 cursor-pointer flex flex-col"
+                        className={`recipe-card-perf group bg-[#fffcf7] rounded-[28px] p-3.5 border shadow-[0_6px_24px_-8px_rgba(82,47,25,0.10)] hover:shadow-[0_14px_32px_-10px_rgba(82,47,25,0.18)] hover:-translate-y-0.5 transition-all duration-300 cursor-pointer flex flex-col ${
+                          recipe.inactive
+                            ? 'border-dashed border-[#522f19]/35 opacity-75'
+                            : 'border-[#522f19]/12'
+                        }`}
                       >
                         <div className="relative bg-[#f2ebe0] rounded-[22px] p-2.5 mb-4">
+                          {isActiveUserPati && (
+                            <button
+                              type="button"
+                              title={recipe.inactive ? 'Clique para reativar esta receita para todos' : 'Inativar receita (ocultar dos outros perfis)'}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleRecipeInactive(recipe);
+                              }}
+                              className={`absolute top-4 left-4 z-10 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold shadow-sm border transition-all active:scale-95 ${
+                                recipe.inactive
+                                  ? 'bg-[#522f19] text-[#f9f5ef] border-[#522f19] hover:bg-[#AF5E33] hover:border-[#AF5E33]'
+                                  : 'bg-[#fffcf7]/95 backdrop-blur-sm text-[#522f19] border-[#522f19]/15 hover:border-[#AF5E33] hover:text-[#AF5E33]'
+                              }`}
+                            >
+                              {recipe.inactive ? (
+                                <>
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                  </svg>
+                                  <span>Inativa · Reativar</span>
+                                </>
+                              ) : (
+                                <>
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                  </svg>
+                                  <span>Inativar</span>
+                                </>
+                              )}
+                            </button>
+                          )}
                           <div className="relative aspect-[4/3] overflow-hidden rounded-[18px] shadow-[0_8px_18px_-6px_rgba(82,47,25,0.28)] transform -rotate-1 group-hover:rotate-0 transition-transform duration-300 bg-[#e8dfd2]">
                             <img
                               src={recipe.imageUrl || DEFAULT_RECIPE_IMAGE}
                               alt={recipe.title}
+                              loading="lazy"
+                              decoding="async"
                               referrerPolicy="no-referrer"
                               onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_RECIPE_IMAGE; }}
-                              className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                              className={`w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 ${
+                                recipe.inactive ? 'grayscale-[35%]' : ''
+                              }`}
                             />
                           </div>
                           <div className="absolute top-4 right-4 flex flex-col gap-2 z-10">
@@ -1130,6 +1229,8 @@ const App: React.FC = () => {
                               <img
                                 src={author?.photoUrl || DEFAULT_PROFILE_IMAGE}
                                 alt={recipe.authorName}
+                                loading="lazy"
+                                decoding="async"
                                 referrerPolicy="no-referrer"
                                 onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
                                 className="w-7 h-7 rounded-full object-cover border border-[#522f19]/15 shrink-0"

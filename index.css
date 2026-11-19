@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+:root {
+  --bg-cream: #f9f5ef;
+  --surface-card: #fffcf7;
+  --surface-well: #f2ebe0;
+  --espresso: #522f19;
+  --terracotta: #AF5E33;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  background-color: #f9f5ef;
+  color: #522f19;
+  overflow-x: hidden;
+}
+
+.font-display, .font-cursive {
+  font-family: 'Playfair Display', Georgia, serif;
+}
+
+.bg-pati-orange { background-color: #AF5E33; }
+.text-pati-orange { color: #AF5E33; }
+.border-pati-orange { border-color: #AF5E33; }
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-8px); }
+  75% { transform: translateX(8px); }
+}
+
+.animate-shake {
+  animation: shake 0.2s ease-in-out 0s 2;
+}
+
+.fade-in {
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.recipe-card-perf {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
+}

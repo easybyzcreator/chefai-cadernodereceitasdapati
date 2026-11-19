@@ -29,6 +29,7 @@ export interface Recipe {
   createdAt: number;
   favoritedBy?: string[]; // Lista de IDs de perfis que favoritaram
   comments?: Comment[];
+  inactive?: boolean;
 }
 
 export enum AppView {
