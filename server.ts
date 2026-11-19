@@ -24,9 +24,17 @@ const RECIPE_SCHEMA = {
 };
 
 function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const raw =
+    process.env.GEMINI_API_KEY ||
+    process.env.API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    '';
+  const apiKey = raw.trim().replace(/^['"]|['"]$/g, '');
   if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
-    const err = new Error('Chave de IA não configurada no servidor (GEMINI_API_KEY).') as Error & { status?: number };
+    const err = new Error(
+      'Chave de IA não configurada no servidor (GEMINI_API_KEY). Configure em Settings > Secrets ou nas variáveis de ambiente do servidor.'
+    ) as Error & { status?: number };
     err.status = 500;
     throw err;
   }
@@ -43,7 +51,15 @@ function getGeminiClient(): GoogleGenAI {
 function parseJsonResponse(text: string | undefined): Record<string, unknown> {
   if (!text) return {};
   const cleaned = text.replace(/```json\s?|```/g, '').trim();
-  return JSON.parse(cleaned) as Record<string, unknown>;
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      return JSON.parse(match[0]) as Record<string, unknown>;
+    }
+    throw new Error('Não foi possível interpretar o formato da receita retornada pela IA.');
+  }
 }
 
 function getErrorPayload(error: unknown): { status: number; message: string } {
@@ -55,8 +71,11 @@ function getErrorPayload(error: unknown): { status: number; message: string } {
       ? errObj.code
       : 500;
 
-  if (status === 400 && rawMessage.includes('API_KEY_INVALID')) {
-    return { status: 400, message: 'Chave Gemini inválida nas configurações do servidor.' };
+  if (rawMessage.includes('API_KEY_INVALID')) {
+    return {
+      status: 400,
+      message: 'A chave Gemini configurada no servidor é inválida. Verifique GEMINI_API_KEY em Settings > Secrets.',
+    };
   }
   if (status === 403 || rawMessage.includes('PERMISSION_DENIED')) {
     return { status: 403, message: 'Permissão negada na API Gemini. Verifique a chave nas configurações do servidor.' };
@@ -115,11 +134,15 @@ async function startServer() {
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: MODEL_NAME,
-        contents: `Analise profundamente o vídeo no link: ${url}. Você deve agir como um transcritor fiel de receitas. Extraia EXATAMENTE a receita que o autor está fazendo. Não invente passos extras, siga o vídeo à risca. Retorne um JSON com: title (nome exato), ingredients (lista com UM ingrediente por linha separado por \\n), instructions (passo a passo narrado no vídeo com UM passo por linha separado por \\n) e category (entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros). Se o vídeo não contiver uma receita clara, tente encontrar referências nos comentários ou descrição via ferramenta de busca.`,
+        contents: `Analise o vídeo ou post no link: ${url}. Busque informações, descrição ou referências deste conteúdo para extrair a receita fielmente. Retorne EXCLUSIVAMENTE um objeto JSON válido (sem texto antes ou depois) com os campos:
+{
+  "title": "nome exato da receita",
+  "ingredients": "UM ingrediente por linha separado por \\n",
+  "instructions": "passo a passo numerado com UM passo por linha separado por \\n",
+  "category": "uma entre: entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
+}`,
         config: {
           tools: [{ googleSearch: {} }],
-          responseMimeType: 'application/json',
-          responseSchema: RECIPE_SCHEMA,
         },
       });
 

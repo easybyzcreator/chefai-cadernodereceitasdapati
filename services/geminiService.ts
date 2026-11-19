@@ -8,14 +8,19 @@ export class GeminiService {
       body: JSON.stringify(payload),
     });
 
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error((data as { error?: string })?.error || 'Erro ao comunicar com o servidor de IA.');
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('Servidor de IA indisponível neste endereço. Verifique as rotas /api e a chave GEMINI_API_KEY.');
+    }
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data) {
+      throw new Error((data as { error?: string } | null)?.error || 'Erro ao comunicar com o servidor de IA.');
     }
     return data as T;
   }
 
-  async transcribeImage(base64Image: string) {
+  async transcribeImage(base64Image: string, mimeType = 'image/jpeg') {
     return this.postJson<{
       title?: string;
       ingredients?: string;
@@ -23,7 +28,7 @@ export class GeminiService {
       category?: string;
     }>('/api/gemini/transcribe-image', {
       imageBase64: base64Image,
-      mimeType: 'image/jpeg',
+      mimeType,
     });
   }
 

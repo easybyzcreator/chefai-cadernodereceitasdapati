@@ -72,24 +72,35 @@ const isRecipeAuthor = (recipe: Recipe | null | undefined, profile: Profile | nu
   return (recipe.authorName || '').trim().toLowerCase() === (profile.name || '').trim().toLowerCase();
 };
 
-const compressImage = (base64: string, maxWidth = 800): Promise<string> => {
-  return new Promise((resolve) => {
+const compressImage = (base64: string, maxWidth = 1024, quality = 0.82): Promise<string> => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.src = base64;
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let width = img.width;
-      let height = img.height;
-      if (width > maxWidth) {
-        height *= maxWidth / width;
-        width = maxWidth;
+      try {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth) {
+          height = Math.round(height * (maxWidth / width));
+          width = maxWidth;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(base64);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } catch (err) {
+        reject(err);
       }
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx?.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.7));
     };
+    img.onerror = () => {
+      reject(new Error('Não foi possível ler esta imagem. Tente enviar um arquivo JPG ou PNG.'));
+    };
+    img.src = base64;
   });
 };
 
@@ -253,11 +264,16 @@ const App: React.FC = () => {
 
   const handleProfilePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (file) {
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const compressed = await compressImage(reader.result as string, 300);
-        setNewProfilePhoto(compressed);
+        try {
+          const compressed = await compressImage(reader.result as string, 300, 0.75);
+          setNewProfilePhoto(compressed);
+        } catch (err: any) {
+          alert(err?.message || 'Não foi possível carregar a foto de perfil.');
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -1293,43 +1309,154 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
   const [formData, setFormData] = useState<Partial<Recipe>>(initialData);
   const [videoUrl, setVideoUrl] = useState('');
   const [suggestionInput, setSuggestionInput] = useState('');
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const cameraFallbackInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, [step]);
 
+  const stopCameraStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isCameraOpen && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [isCameraOpen]);
+
   const handleSimpleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (file) {
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const compressed = await compressImage(reader.result as string, 800);
-        setFormData(prev => ({ ...prev, imageUrl: compressed }));
+        try {
+          const compressed = await compressImage(reader.result as string, 800, 0.75);
+          setFormData(prev => ({ ...prev, imageUrl: compressed }));
+        } catch (err: any) {
+          alert(err?.message || 'Não foi possível carregar esta imagem.');
+        }
       };
       reader.readAsDataURL(file);
     }
   };
 
+  const processScannedImageDataUrl = async (rawDataUrl: string) => {
+    setIsAiLoading(true);
+    let compressed = rawDataUrl;
+    try {
+      compressed = await compressImage(rawDataUrl, 1200, 0.85);
+      const [header, base64Data] = compressed.split(',');
+      const mimeMatch = header?.match(/data:(.*?);base64/);
+      const mimeType = mimeMatch?.[1] || 'image/jpeg';
+      if (!base64Data) {
+        throw new Error('Imagem inválida para leitura.');
+      }
+      const result = await gemini.transcribeImage(base64Data, mimeType);
+      setFormData(prev => ({ ...prev, ...result, imageUrl: compressed }));
+      setStep('form');
+    } catch (err: any) {
+      alert(err?.message || 'Não foi possível transcrever automaticamente por IA. Você pode preencher os dados da receita manualmente.');
+      setFormData(prev => ({ ...prev, imageUrl: compressed }));
+      setStep('form');
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    setIsAiLoading(true);
     const reader = new FileReader();
     reader.onloadend = async () => {
-      const compressed = await compressImage(reader.result as string, 800);
-      try {
-        const result = await gemini.transcribeImage(compressed.split(',')[1]);
-        setFormData(prev => ({ ...prev, ...result, imageUrl: compressed }));
-        setStep('form');
-      } catch (err: any) {
-        alert(err?.message || 'Não foi possível transcrever automaticamente por IA. Você pode preencher os dados da receita manualmente.');
-        setFormData(prev => ({ ...prev, imageUrl: compressed }));
-        setStep('form');
-      } finally {
-        setIsAiLoading(false);
+      if (typeof reader.result === 'string') {
+        await processScannedImageDataUrl(reader.result);
+      } else {
+        alert('Não foi possível ler o arquivo de imagem selecionado.');
       }
     };
+    reader.onerror = () => {
+      alert('Erro ao abrir o arquivo de imagem.');
+    };
     reader.readAsDataURL(file);
+  };
+
+  const handleOpenCamera = async () => {
+    setCameraError('');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      cameraFallbackInputRef.current?.click();
+      return;
+    }
+
+    try {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
+      streamRef.current = stream;
+      setIsCameraOpen(true);
+    } catch {
+      cameraFallbackInputRef.current?.click();
+    }
+  };
+
+  const handleCapturePhoto = async () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      setCameraError('Aguarde a câmera carregar antes de tirar a foto.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    const maxWidth = 1200;
+    let width = video.videoWidth;
+    let height = video.videoHeight;
+    if (width > maxWidth) {
+      height = Math.round(height * (maxWidth / width));
+      width = maxWidth;
+    }
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, width, height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    stopCameraStream();
+    setIsCameraOpen(false);
+    await processScannedImageDataUrl(dataUrl);
+  };
+
+  const handleCloseCamera = () => {
+    stopCameraStream();
+    setIsCameraOpen(false);
+    setCameraError('');
   };
 
   const handleVideoTranscribe = async () => {
@@ -1367,18 +1494,50 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
       <div className="bg-[#fffcf7] rounded-3xl p-8 shadow-[0_10px_30px_-12px_rgba(82,47,25,0.14)] max-w-lg mx-auto space-y-6 border border-[#522f19]/12 fade-in">
         <h2 className="text-2xl font-display font-bold text-[#522f19]">Nova Receita</h2>
         <div className="space-y-4">
-          <label className="block p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl cursor-pointer hover:bg-[#f2ebe0] text-center transition-all">
-            <div className="w-12 h-12 rounded-2xl bg-[#f2ebe0] text-[#522f19] mx-auto mb-3 flex items-center justify-center">
-              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" />
-              </svg>
+          <div className="p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl text-center space-y-4">
+            <div>
+              <div className="w-12 h-12 rounded-2xl bg-[#f2ebe0] text-[#522f19] mx-auto mb-3 flex items-center justify-center">
+                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" />
+                </svg>
+              </div>
+              <span className="text-[#522f19] font-semibold block">Foto / Scanner com IA</span>
+              <p className="text-xs text-[#522f19]/70 mt-1.5 leading-relaxed max-w-sm mx-auto">
+                Tire uma foto na hora ou envie uma imagem de receita impressa ou escrita à mão. A IA lê a imagem e preenche os campos automaticamente.
+              </p>
             </div>
-            <span className="text-[#522f19] font-semibold block">Foto / Scanner com IA</span>
-            <p className="text-xs text-[#522f19]/70 mt-1.5 leading-relaxed max-w-sm mx-auto">
-              Toque para enviar uma foto de receita impressa ou escrita à mão. A IA lê a imagem e preenche os campos automaticamente.
-            </p>
-            <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-          </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleOpenCamera}
+                className="flex-1 py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider transition-all active:scale-95"
+              >
+                Abrir Câmera
+              </button>
+              <button
+                type="button"
+                onClick={() => galleryInputRef.current?.click()}
+                className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all active:scale-95"
+              >
+                Enviar Imagem
+              </button>
+            </div>
+            <input
+              ref={cameraFallbackInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
+            <input
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
+          </div>
           <div className="p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl space-y-4">
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl bg-[#f2ebe0] text-[#522f19] shrink-0 flex items-center justify-center">
@@ -1459,6 +1618,50 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
         <button onClick={onCancel} className="w-full py-3 text-[#522f19]/60 font-semibold hover:text-[#522f19]">
           Cancelar
         </button>
+        {isCameraOpen && (
+          <div className="fixed inset-0 bg-[#522f19]/80 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
+            <div className="bg-[#fffcf7] rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl border border-[#522f19]/15">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-display font-bold text-[#522f19]">Fotografar Receita</h3>
+                <button
+                  type="button"
+                  onClick={handleCloseCamera}
+                  className="text-xs font-semibold text-[#522f19]/60 hover:text-[#522f19]"
+                >
+                  Fechar ✕
+                </button>
+              </div>
+              <div className="relative rounded-2xl overflow-hidden bg-[#522f19] aspect-[4/3]">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              {cameraError && (
+                <p className="text-xs text-red-600 text-center font-medium">{cameraError}</p>
+              )}
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleCloseCamera}
+                  className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCapturePhoto}
+                  className="flex-[2] py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider shadow-md transition-all active:scale-95"
+                >
+                  Tirar Foto e Ler Receita
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {isAiLoading && (
           <div className="fixed inset-0 bg-[#f9f5ef]/85 backdrop-blur-sm flex items-center justify-center z-[100] font-display italic text-2xl text-[#AF5E33] animate-pulse">
             A IA está preparando...
