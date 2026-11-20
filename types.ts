@@ -17,7 +17,7 @@ export interface Profile {
 export interface Recipe {
   id: string;
   title: string;
-  category: 'entradas' | 'saladas' | 'prato_principal' | 'massas' | 'salgados' | 'sobremesas' | 'bebidas' | 'pães' | 'bolos' | 'tortas' | 'outros';
+  category: 'entradas' | 'saladas' | 'prato_principal' | 'carnes' | 'massas' | 'salgados' | 'sobremesas' | 'bebidas' | 'pães' | 'bolos' | 'tortas' | 'outros';
   ingredients: string;
   instructions: string;
   tips?: string;

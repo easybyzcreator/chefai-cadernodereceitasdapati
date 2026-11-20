@@ -4,6 +4,7 @@ export const FAMILY_PASSWORD = "2610";
 export const CATEGORIES = [
   { id: 'bebidas', label: 'Bebidas', icon: '🍹' },
   { id: 'bolos', label: 'Bolos', icon: '🎂' },
+  { id: 'carnes', label: 'Carnes', icon: '🥩' },
   { id: 'entradas', label: 'Entradas', icon: '🍿' },
   { id: 'massas', label: 'Massas', icon: '🍝' },
   { id: 'pães', label: 'Pães', icon: '🍞' },

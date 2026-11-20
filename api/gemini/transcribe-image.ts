@@ -79,7 +79,7 @@ export default async function handler(req: any, res: any) {
             },
           },
           {
-            text: 'Você é um assistente de cozinha especializado. Sua tarefa é extrair com precisão absoluta a receita desta imagem. Se for escrita à mão, use todo o seu conhecimento para decifrar as palavras. Retorne APENAS um objeto JSON estruturado com os campos: title (nome da receita), ingredients (lista detalhada com UM ingrediente por linha separado por quebra de linha \\n), instructions (passo a passo completo com UM passo numerado por linha separado por \\n) e category (escolha exclusivamente entre: entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).',
+            text: 'Você é um assistente de cozinha especializado. Sua tarefa é extrair com precisão absoluta a receita desta imagem. Se for escrita à mão, use todo o seu conhecimento para decifrar as palavras. Retorne APENAS um objeto JSON estruturado com os campos: title (nome da receita), ingredients (lista detalhada com UM ingrediente por linha separado por quebra de linha \\n), instructions (passo a passo completo com UM passo numerado por linha separado por \\n) e category (escolha exclusivamente entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).',
           },
         ],
       },

@@ -64,7 +64,7 @@ export default async function handler(req: any, res: any) {
   "title": "nome exato da receita",
   "ingredients": "UM ingrediente por linha separado por \\n",
   "instructions": "passo a passo numerado com UM passo por linha separado por \\n",
-  "category": "uma entre: entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
+  "category": "uma entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
 }`,
       config: {
         tools: [{ googleSearch: {} }],

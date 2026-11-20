@@ -70,7 +70,7 @@ export default async function handler(req: any, res: any) {
 
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `Você é um chef premiado. Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita completa e detalhada. Seja específico nas quantidades e no modo de preparo. Retorne no formato JSON: title, ingredients (UM ingrediente por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
+      contents: `Você é um chef premiado. Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita completa e detalhada. Seja específico nas quantidades e no modo de preparo. Retorne no formato JSON: title, ingredients (UM ingrediente por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
       config: {
         responseMimeType: 'application/json',
         responseSchema: RECIPE_SCHEMA,

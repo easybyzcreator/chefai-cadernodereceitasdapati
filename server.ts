@@ -105,7 +105,7 @@ async function startServer() {
           parts: [
             { inlineData: { data: imageBase64, mimeType: typeof mimeType === 'string' && mimeType ? mimeType : 'image/jpeg' } },
             {
-              text: 'Você é um assistente de cozinha especializado. Sua tarefa é extrair com precisão absoluta a receita desta imagem. Se for escrita à mão, use todo o seu conhecimento para decifrar as palavras. Retorne APENAS um objeto JSON estruturado com os campos: title (nome da receita), ingredients (lista detalhada com UM ingrediente por linha separado por quebra de linha \\n), instructions (passo a passo completo com UM passo numerado por linha separado por \\n) e category (escolha exclusivamente entre: entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).',
+              text: 'Você é um assistente de cozinha especializado. Sua tarefa é extrair com precisão absoluta a receita desta imagem. Se for escrita à mão, use todo o seu conhecimento para decifrar as palavras. Retorne APENAS um objeto JSON estruturado com os campos: title (nome da receita), ingredients (lista detalhada com UM ingrediente por linha separado por quebra de linha \\n), instructions (passo a passo completo com UM passo numerado por linha separado por \\n) e category (escolha exclusivamente entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).',
             },
           ],
         },
@@ -139,7 +139,7 @@ async function startServer() {
   "title": "nome exato da receita",
   "ingredients": "UM ingrediente por linha separado por \\n",
   "instructions": "passo a passo numerado com UM passo por linha separado por \\n",
-  "category": "uma entre: entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
+  "category": "uma entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
 }`,
         config: {
           tools: [{ googleSearch: {} }],
@@ -165,7 +165,7 @@ async function startServer() {
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: MODEL_NAME,
-        contents: `Você é um chef premiado. Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita completa e detalhada. Seja específico nas quantidades e no modo de preparo. Retorne no formato JSON: title, ingredients (UM ingrediente por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
+        contents: `Você é um chef premiado. Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita completa e detalhada. Seja específico nas quantidades e no modo de preparo. Retorne no formato JSON: title, ingredients (UM ingrediente por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: RECIPE_SCHEMA,
