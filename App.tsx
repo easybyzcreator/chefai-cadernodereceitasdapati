@@ -2012,27 +2012,27 @@ const RecipeDetailView = ({
         )}
       </div>
 
-      <div className="bg-[#f9f5ef] p-6 rounded-2xl border border-[#522f19]/12 space-y-4">
-        <div className="flex flex-wrap justify-between items-center gap-3">
-          <h4 className="font-display font-bold text-[#522f19] text-lg flex items-center gap-2.5">
+      <div className="bg-[#f9f5ef] p-5 sm:p-6 rounded-2xl border border-[#522f19]/12 space-y-4">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="font-display font-bold text-[#522f19] text-lg flex items-center gap-2 sm:gap-2.5 min-w-0">
             <span className="w-8 h-8 rounded-xl bg-[#f2ebe0] text-[#522f19] inline-flex items-center justify-center shrink-0">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M4 6h2v2H4V6zm0 5h2v2H4v-2zm0 5h2v2H4v-2zm4-9h12v2H8V7zm0 5h12v2H8v-2zm0 5h12v2H8v-2z" />
               </svg>
             </span>
-            <span>Ingredientes</span>
+            <span className="truncate">Ingredientes</span>
           </h4>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             <button
               onClick={() => handleAdjust(Math.max(0.5, portionFactor - 0.5))}
-              className="w-8 h-8 rounded-full bg-[#fffcf7] border border-[#522f19]/15 text-[#AF5E33] shadow-sm flex items-center justify-center font-bold transition-transform active:scale-90"
+              className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-[#fffcf7] border border-[#522f19]/15 text-[#AF5E33] shadow-sm flex items-center justify-center font-bold transition-transform active:scale-90"
             >
               -
             </button>
-            <span className="font-semibold text-sm text-[#522f19] tabular-nums">{portionFactor}x</span>
+            <span className="font-semibold text-sm text-[#522f19] tabular-nums min-w-[1.5rem] text-center">{portionFactor}x</span>
             <button
               onClick={() => handleAdjust(portionFactor + 0.5)}
-              className="w-8 h-8 rounded-full bg-[#fffcf7] border border-[#522f19]/15 text-[#AF5E33] shadow-sm flex items-center justify-center font-bold transition-transform active:scale-90"
+              className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-[#fffcf7] border border-[#522f19]/15 text-[#AF5E33] shadow-sm flex items-center justify-center font-bold transition-transform active:scale-90"
             >
               +
             </button>
@@ -2201,6 +2201,16 @@ const RecipeDetailView = ({
             Enviar
           </button>
         </div>
+      </div>
+
+      <div className="pt-4 border-t border-[#522f19]/10 flex items-center">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-[#AF5E33] font-semibold flex items-center gap-2 hover:underline"
+        >
+          ← Voltar
+        </button>
       </div>
     </div>
   );
