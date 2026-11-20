@@ -38,6 +38,35 @@ const formatInstructionSteps = (text: string): string[] => {
     .filter(Boolean);
 };
 
+const URL_SPLIT_REGEX = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
+
+const renderTextWithLinks = (text: string): React.ReactNode => {
+  if (!text) return null;
+  const parts = text.split(URL_SPLIT_REGEX);
+  return parts.map((part, idx) => {
+    if (/^(https?:\/\/|www\.)/i.test(part)) {
+      const cleanPart = part.replace(/[),.!?;:]+$/, '');
+      const trailing = part.slice(cleanPart.length);
+      const href = cleanPart.startsWith('http') ? cleanPart : `https://${cleanPart}`;
+      return (
+        <React.Fragment key={idx}>
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="text-[#AF5E33] underline underline-offset-2 font-medium break-all hover:text-[#522f19]"
+          >
+            {cleanPart}
+          </a>
+          {trailing}
+        </React.Fragment>
+      );
+    }
+    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  });
+};
+
 const isoToBrDate = (iso: string): string => {
   if (!iso) return '';
   const parts = iso.split('-');
@@ -1996,7 +2025,7 @@ const RecipeDetailView = ({
           {recipe.source && (
             <>
               <span>·</span>
-              <span className="italic">Origem: {recipe.source}</span>
+              <span className="italic break-words [overflow-wrap:anywhere]">Origem: {renderTextWithLinks(recipe.source)}</span>
             </>
           )}
         </div>
@@ -2068,7 +2097,9 @@ const RecipeDetailView = ({
                           </svg>
                         )}
                       </span>
-                      <span className={isChecked ? 'line-through opacity-50' : ''}>{item}</span>
+                      <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${isChecked ? 'line-through opacity-50' : ''}`}>
+                        {renderTextWithLinks(item)}
+                      </span>
                     </button>
                   </li>
                 );
@@ -2153,8 +2184,8 @@ const RecipeDetailView = ({
                     >
                       {isDone ? '✓' : match ? match[1].replace(/[.)]/g, '') : idx + 1}
                     </span>
-                    <span className={isDone ? 'line-through opacity-50' : ''}>
-                      {match ? match[2] : step}
+                    <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${isDone ? 'line-through opacity-50' : ''}`}>
+                      {renderTextWithLinks(match ? match[2] : step)}
                     </span>
                   </button>
                 );
@@ -2166,11 +2197,13 @@ const RecipeDetailView = ({
         </div>
 
         {recipe.tips && (
-          <div className="p-6 bg-[#f2ebe0] rounded-2xl border border-[#AF5E33]/20 space-y-2 fade-in">
+          <div className="p-5 sm:p-6 bg-[#f2ebe0] rounded-2xl border border-[#AF5E33]/20 space-y-2 fade-in overflow-hidden min-w-0">
             <h4 className="font-semibold text-[#AF5E33] text-xs uppercase tracking-[0.15em] flex items-center gap-2">
               💡 Dica da {recipe.authorName}
             </h4>
-            <p className="text-[#522f19]/85 text-sm italic leading-relaxed">{recipe.tips}</p>
+            <p className="text-[#522f19]/85 text-sm italic leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+              {renderTextWithLinks(recipe.tips)}
+            </p>
           </div>
         )}
       </div>
@@ -2179,9 +2212,11 @@ const RecipeDetailView = ({
         <h4 className="font-display font-bold text-[#522f19] text-lg mb-4">💬 Comentários</h4>
         <div className="space-y-3 mb-6">
           {(recipe.comments || []).map((c: any) => (
-            <div key={c.id} className="bg-[#f9f5ef] p-4 rounded-2xl border border-[#522f19]/10 fade-in">
+            <div key={c.id} className="bg-[#f9f5ef] p-4 rounded-2xl border border-[#522f19]/10 fade-in overflow-hidden min-w-0">
               <p className="text-xs font-bold text-[#AF5E33] mb-1">{c.authorName}</p>
-              <p className="text-sm text-[#522f19]/85">{c.text}</p>
+              <p className="text-sm text-[#522f19]/85 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                {renderTextWithLinks(c.text)}
+              </p>
             </div>
           ))}
         </div>
@@ -2699,6 +2734,13 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
             onChange={e => setFormData({ ...formData, source: e.target.value })}
           />
         </div>
+        <input
+          type="url"
+          placeholder="Link da receita ou vídeo (opcional, ex: https://...)"
+          className="w-full p-4 border border-[#522f19]/15 bg-[#f9f5ef] text-[#522f19] rounded-2xl outline-none focus:border-[#AF5E33]"
+          value={formData.externalLink || ''}
+          onChange={e => setFormData({ ...formData, externalLink: e.target.value })}
+        />
         <textarea
           placeholder="Dicas da receita (ex: 'O segredo é deixar a massa descansar 20 min')"
           className="w-full p-4 border border-[#522f19]/15 bg-[#f9f5ef] text-[#522f19] rounded-2xl h-24 outline-none focus:border-[#AF5E33] resize-none"
