@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { AppView, Profile, Recipe, Comment } from './types';
 import { LOGO_URL, CATEGORIES, DEFAULT_PROFILE_IMAGE, DEFAULT_RECIPE_IMAGE } from './constants';
 import { gemini } from './services/geminiService';
@@ -145,8 +146,19 @@ const App: React.FC = () => {
   const [tempSearch, setTempSearch] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [authorFilter, setAuthorFilter] = useState<string | null>(null);
+  const [showInactiveOnly, setShowInactiveOnly] = useState(false);
+  const [sortOrder, setSortOrder] = useState<'alpha' | 'recent'>('alpha');
   const [isCategoriesOpen, setIsCategoriesOpen] = useState(false);
+  const [isAuthorsOpen, setIsAuthorsOpen] = useState(false);
   const [showBirthdays, setShowBirthdays] = useState(false);
+  const [pendingDeepLinkRecipeId, setPendingDeepLinkRecipeId] = useState<string | null>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('receita');
+    } catch {
+      return null;
+    }
+  });
 
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfilePhoto, setNewProfilePhoto] = useState('');
@@ -194,7 +206,7 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!profilesLoaded && view === AppView.PROFILE_SELECT) return;
+    if (!profilesLoaded && view === AppView.PROFILE_SELECT && !pendingDeepLinkRecipeId) return;
     const qRecipes = query(collection(db, "recipes"), orderBy("createdAt", "desc"));
     const unsubRecipes = onSnapshot(qRecipes, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Recipe));
@@ -205,7 +217,27 @@ const App: React.FC = () => {
     return () => {
       unsubRecipes();
     };
-  }, [profilesLoaded, view]);
+  }, [profilesLoaded, view, pendingDeepLinkRecipeId]);
+
+  useEffect(() => {
+    if (!pendingDeepLinkRecipeId || !recipesLoaded || !activeProfile) return;
+    const target = recipes.find(r => r.id === pendingDeepLinkRecipeId);
+    setPendingDeepLinkRecipeId(null);
+    try {
+      window.history.replaceState({}, '', window.location.pathname);
+    } catch {
+      // ignore history errors
+    }
+    if (target && (isPatiProfile(activeProfile) || !target.inactive)) {
+      setEditingRecipe(target);
+      setShowBirthdays(false);
+      setView(AppView.RECIPE_DETAIL);
+    } else {
+      setShowBirthdays(false);
+      setView(AppView.HOME);
+      alert("Receita não encontrada ou indisponível no momento.");
+    }
+  }, [pendingDeepLinkRecipeId, recipesLoaded, activeProfile, recipes]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -219,7 +251,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
-  }, [view, showBirthdays, editingRecipe?.id, categoryFilter]);
+  }, [view, showBirthdays, editingRecipe?.id, categoryFilter, authorFilter, showInactiveOnly]);
 
   const sortedProfiles = useMemo(() => {
     return [...profiles].sort((a, b) => {
@@ -237,12 +269,83 @@ const App: React.FC = () => {
     );
   }, [recipes]);
 
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const r of recipes) {
+      if (r.inactive) continue;
+      if (r.category) {
+        counts[r.category] = (counts[r.category] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [recipes]);
+
+  const inactiveCount = useMemo(() => {
+    if (!isActiveUserPati) return 0;
+    return recipes.filter(r => Boolean(r.inactive)).length;
+  }, [recipes, isActiveUserPati]);
+
+  const myRecipesCount = useMemo(() => {
+    if (!activeProfile) return 0;
+    return recipes.filter(r => !r.inactive && isRecipeAuthor(r, activeProfile)).length;
+  }, [recipes, activeProfile]);
+
+  const madeAndLikedCount = useMemo(() => {
+    if (!activeProfile) return 0;
+    return recipes.filter(r => !r.inactive && r.madeAndLikedBy?.includes(activeProfile.id)).length;
+  }, [recipes, activeProfile]);
+
+  const authorOptions = useMemo(() => {
+    const visible = recipes.filter(r => !r.inactive);
+    const options: { key: string; label: string; count: number; photoUrl: string }[] = [];
+    const matchedIds = new Set<string>();
+
+    for (const p of sortedProfiles) {
+      const pNorm = normalizeText(p.name);
+      const count = visible.filter(r => {
+        const matches = r.authorId === p.id || normalizeText(r.authorName) === pNorm;
+        if (matches) matchedIds.add(r.id);
+        return matches;
+      }).length;
+      options.push({
+        key: p.id,
+        label: p.name,
+        count,
+        photoUrl: p.photoUrl || DEFAULT_PROFILE_IMAGE,
+      });
+    }
+
+    const extraMap = new Map<string, { label: string; count: number }>();
+    for (const r of visible) {
+      if (matchedIds.has(r.id)) continue;
+      const rawName = (r.authorName || '').trim();
+      if (!rawName) continue;
+      const norm = normalizeText(rawName);
+      const existing = extraMap.get(norm);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        extraMap.set(norm, { label: rawName, count: 1 });
+      }
+    }
+    for (const [norm, val] of extraMap.entries()) {
+      options.push({
+        key: `name:${norm}`,
+        label: val.label,
+        count: val.count,
+        photoUrl: DEFAULT_PROFILE_IMAGE,
+      });
+    }
+
+    return options;
+  }, [recipes, sortedProfiles]);
+
   const searchSuggestions = useMemo(() => {
     const queryNorm = normalizeText(tempSearch);
     if (!queryNorm) return [];
 
     const scored = sortedRecipes
-      .filter(r => isActiveUserPati || !r.inactive)
+      .filter(r => (showInactiveOnly && isActiveUserPati) ? Boolean(r.inactive) : !r.inactive)
       .map(r => {
         const titleNorm = normalizeText(r.title);
         const ingredientsNorm = normalizeText(r.ingredients);
@@ -264,7 +367,7 @@ const App: React.FC = () => {
       .map(item => item.recipe);
 
     return scored;
-  }, [tempSearch, sortedRecipes, isActiveUserPati]);
+  }, [tempSearch, sortedRecipes, showInactiveOnly, isActiveUserPati]);
 
   const handleSaveProfile = async () => {
     if (!newProfileName.trim()) return;
@@ -331,8 +434,13 @@ const App: React.FC = () => {
     } else {
       localStorage.setItem('active_profile_id', p.id);
     }
+    if (!isPatiProfile(p)) {
+      setShowInactiveOnly(false);
+    }
     setShowBirthdays(false);
-    setView(AppView.HOME);
+    if (!pendingDeepLinkRecipeId) {
+      setView(AppView.HOME);
+    }
   };
 
   const handleProfileAction = (p: Profile, action: 'enter' | 'edit' | 'delete') => {
@@ -408,8 +516,21 @@ const App: React.FC = () => {
     }
   };
 
-  const handleWhatsAppShare = (recipeTitle: string) => {
-    const message = encodeURIComponent(`Olha a receita nova que acabei de postar no nosso caderno: ${recipeTitle}! Confere lá no chef.ai 🍳`);
+  const getRecipeShareUrl = (recipeId?: string): string => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = '';
+    if (recipeId) {
+      url.searchParams.set('receita', recipeId);
+    }
+    return url.toString();
+  };
+
+  const handleWhatsAppShare = (recipeTitle: string, recipeId?: string) => {
+    const directLink = recipeId ? `\nAcesse direto aqui: ${getRecipeShareUrl(recipeId)}` : '';
+    const message = encodeURIComponent(
+      `Olha essa receita no nosso caderno da Pati: *${recipeTitle}* 🍳${directLink}`
+    );
     window.open(`https://api.whatsapp.com/send?text=${message}`, '_blank');
   };
 
@@ -443,11 +564,12 @@ const App: React.FC = () => {
           externalLink: cleanedData.externalLink || '',
           imageUrl: cleanedData.imageUrl || DEFAULT_RECIPE_IMAGE,
           favoritedBy: [],
+          madeAndLikedBy: [],
           comments: [],
         };
-        await addDoc(collection(db, "recipes"), newRecipeData);
+        const docRef = await addDoc(collection(db, "recipes"), newRecipeData);
         if (window.confirm("Receita guardada! Deseja compartilhar agora no WhatsApp da família?")) {
-          handleWhatsAppShare(newRecipeData.title);
+          handleWhatsAppShare(newRecipeData.title, docRef.id);
         }
       }
     } catch (e) {
@@ -466,6 +588,18 @@ const App: React.FC = () => {
         ? favoritedBy.filter(id => id !== activeProfile.id)
         : [...favoritedBy, activeProfile.id];
       await updateDoc(doc(db, "recipes", recipeId), { favoritedBy: newFavoritedBy });
+    }
+  };
+
+  const toggleMadeAndLiked = async (recipeId: string) => {
+    if (!activeProfile) return;
+    const recipe = recipes.find(r => r.id === recipeId);
+    if (recipe) {
+      const madeAndLikedBy = recipe.madeAndLikedBy || [];
+      const newMadeAndLikedBy = madeAndLikedBy.includes(activeProfile.id)
+        ? madeAndLikedBy.filter(id => id !== activeProfile.id)
+        : [...madeAndLikedBy, activeProfile.id];
+      await updateDoc(doc(db, "recipes", recipeId), { madeAndLikedBy: newMadeAndLikedBy });
     }
   };
 
@@ -560,9 +694,14 @@ const App: React.FC = () => {
           <p className="font-display italic text-[#522f19]/80 text-base sm:text-lg leading-relaxed max-w-lg mb-8 px-4">
             Nosso caderno de receitas virou app! Agora a gente compartilha segredos de cozinha e deixa tudo guardado aqui.
           </p>
-          <h2 className="text-3xl sm:text-4xl font-display font-bold text-[#522f19] mb-10">
+          <h2 className="text-3xl sm:text-4xl font-display font-bold text-[#522f19] mb-6">
             Vamos cozinhar juntas?
           </h2>
+          {pendingDeepLinkRecipeId && (
+            <div className="mb-8 px-5 py-2.5 rounded-full bg-[#fffcf7] border border-[#AF5E33]/35 text-xs sm:text-sm font-semibold text-[#AF5E33] shadow-sm">
+              Receita compartilhada aguardando — toque no seu perfil para abrir
+            </div>
+          )}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-8 w-full max-w-xl">
             {!profilesLoaded && sortedProfiles.length === 0 ? (
               Array.from({ length: 3 }).map((_, idx) => (
@@ -639,72 +778,74 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          {passwordChallenge && (
-            <div className="fixed inset-0 bg-[#522f19]/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
-              <div className="bg-[#fffcf7] rounded-3xl p-7 max-w-sm w-full space-y-5 shadow-2xl border border-[#522f19]/15 text-center fade-in">
-                <img
-                  src={passwordChallenge.profile.photoUrl || DEFAULT_PROFILE_IMAGE}
-                  alt={passwordChallenge.profile.name}
-                  referrerPolicy="no-referrer"
-                  onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
-                  className="w-20 h-20 rounded-full object-cover mx-auto border-2 border-[#AF5E33] shadow-sm"
-                />
-                <div className="space-y-1">
-                  <h3 className="text-xl font-display font-bold text-[#522f19]">
-                    Perfil de {passwordChallenge.profile.name}
-                  </h3>
-                  <p className="text-xs text-[#522f19]/70">
-                    {passwordChallenge.action === 'enter'
-                      ? 'Digite a senha para acessar este perfil e gerenciar suas receitas.'
-                      : passwordChallenge.action === 'edit'
-                        ? 'Digite a senha para editar este perfil.'
-                        : 'Digite a senha para confirmar a exclusão deste perfil.'}
-                  </p>
-                </div>
-                <input
-                  type="password"
-                  autoFocus
-                  placeholder="Digite a senha..."
-                  className={`w-full p-3.5 rounded-2xl border bg-[#f9f5ef] text-[#522f19] text-sm outline-none transition-all ${
-                    passwordChallengeError
-                      ? 'border-red-500 bg-red-50 animate-shake'
-                      : 'border-[#522f19]/20 focus:border-[#AF5E33]'
-                  }`}
-                  value={passwordChallengeInput}
-                  onChange={e => {
-                    setPasswordChallengeInput(e.target.value);
-                    setPasswordChallengeError(false);
-                  }}
-                  onKeyDown={e => e.key === 'Enter' && handleConfirmProfilePassword()}
-                />
-                {passwordChallengeError && (
-                  <p className="text-xs font-semibold text-red-600">
-                    Senha incorreta. Tente novamente.
-                  </p>
-                )}
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPasswordChallenge(null);
-                      setPasswordChallengeInput('');
+          {passwordChallenge &&
+            createPortal(
+              <div className="fixed inset-0 bg-[#522f19]/60 backdrop-blur-sm flex items-start sm:items-center justify-center p-4 pt-6 sm:p-4 z-[100] overflow-y-auto">
+                <div className="bg-[#fffcf7] rounded-3xl p-6 sm:p-7 max-w-sm w-full space-y-5 shadow-2xl border border-[#522f19]/15 text-center max-h-[92dvh] overflow-y-auto">
+                  <img
+                    src={passwordChallenge.profile.photoUrl || DEFAULT_PROFILE_IMAGE}
+                    alt={passwordChallenge.profile.name}
+                    referrerPolicy="no-referrer"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
+                    className="w-20 h-20 rounded-full object-cover mx-auto border-2 border-[#AF5E33] shadow-sm"
+                  />
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-display font-bold text-[#522f19]">
+                      Perfil de {passwordChallenge.profile.name}
+                    </h3>
+                    <p className="text-xs text-[#522f19]/70">
+                      {passwordChallenge.action === 'enter'
+                        ? 'Digite a senha para acessar este perfil e gerenciar suas receitas.'
+                        : passwordChallenge.action === 'edit'
+                          ? 'Digite a senha para editar este perfil.'
+                          : 'Digite a senha para confirmar a exclusão deste perfil.'}
+                    </p>
+                  </div>
+                  <input
+                    type="password"
+                    autoFocus
+                    placeholder="Digite a senha..."
+                    className={`w-full p-3.5 rounded-2xl border bg-[#f9f5ef] text-[#522f19] text-sm outline-none transition-all ${
+                      passwordChallengeError
+                        ? 'border-red-500 bg-red-50 animate-shake'
+                        : 'border-[#522f19]/20 focus:border-[#AF5E33]'
+                    }`}
+                    value={passwordChallengeInput}
+                    onChange={e => {
+                      setPasswordChallengeInput(e.target.value);
                       setPasswordChallengeError(false);
                     }}
-                    className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleConfirmProfilePassword}
-                    className="flex-1 py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95"
-                  >
-                    Entrar
-                  </button>
+                    onKeyDown={e => e.key === 'Enter' && handleConfirmProfilePassword()}
+                  />
+                  {passwordChallengeError && (
+                    <p className="text-xs font-semibold text-red-600">
+                      Senha incorreta. Tente novamente.
+                    </p>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPasswordChallenge(null);
+                        setPasswordChallengeInput('');
+                        setPasswordChallengeError(false);
+                      }}
+                      className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmProfilePassword}
+                      className="flex-1 py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95"
+                    >
+                      Entrar
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+              </div>,
+              document.body
+            )}
         </div>
       );
     }
@@ -805,17 +946,73 @@ const App: React.FC = () => {
     }
 
     const filteredRecipes = sortedRecipes.filter(r => {
-      if (!isActiveUserPati && r.inactive) return false;
+      if (showInactiveOnly) {
+        if (!isActiveUserPati || !r.inactive) return false;
+      } else if (r.inactive) {
+        return false;
+      }
+
       const searchNorm = normalizeText(search);
       const matchesSearch =
         !searchNorm ||
         normalizeText(r.title).includes(searchNorm) ||
         normalizeText(r.ingredients).includes(searchNorm) ||
         normalizeText(r.authorName).includes(searchNorm);
-      const matchesCategory = categoryFilter === 'all' || r.category === categoryFilter;
-      const matchesFavorites = categoryFilter === 'favoritos' ? (r.favoritedBy?.includes(activeProfile?.id || '')) : true;
-      return matchesSearch && (categoryFilter === 'favoritos' ? matchesFavorites : matchesCategory);
+      if (!matchesSearch) return false;
+
+      if (authorFilter) {
+        if (authorFilter === '__mine__') {
+          if (!isRecipeAuthor(r, activeProfile)) return false;
+        } else if (authorFilter.startsWith('name:')) {
+          if (normalizeText(r.authorName) !== authorFilter.slice(5)) return false;
+        } else {
+          const targetAuthor = profiles.find(p => p.id === authorFilter);
+          const matchesId = r.authorId === authorFilter;
+          const matchesName = targetAuthor && normalizeText(r.authorName) === normalizeText(targetAuthor.name);
+          if (!matchesId && !matchesName) return false;
+        }
+      }
+
+      if (categoryFilter === 'favoritos') {
+        return Boolean(r.favoritedBy?.includes(activeProfile?.id || ''));
+      }
+      if (categoryFilter === 'feitas') {
+        return Boolean(r.madeAndLikedBy?.includes(activeProfile?.id || ''));
+      }
+      return categoryFilter === 'all' || r.category === categoryFilter;
     });
+
+    const displayedRecipes =
+      sortOrder === 'recent'
+        ? [...filteredRecipes].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+        : filteredRecipes;
+
+    const selectedAuthorOption =
+      authorFilter && authorFilter !== '__mine__'
+        ? authorOptions.find(a => a.key === authorFilter)
+        : null;
+
+    const activeAuthorPhoto = showBirthdays || showInactiveOnly
+      ? null
+      : authorFilter === '__mine__'
+        ? (activeProfile?.photoUrl || DEFAULT_PROFILE_IMAGE)
+        : selectedAuthorOption
+          ? selectedAuthorOption.photoUrl
+          : null;
+
+    const activeSectionTitle = showInactiveOnly
+      ? 'Receitas inativas'
+      : authorFilter === '__mine__'
+        ? 'Minhas receitas'
+        : authorFilter
+          ? `Receitas de ${selectedAuthorOption?.label || 'Família'}`
+          : categoryFilter === 'favoritos'
+            ? `Favoritas de ${activeProfile?.name || 'Pati'}`
+            : categoryFilter === 'feitas'
+              ? 'Já fiz e gostei'
+              : categoryFilter !== 'all'
+                ? (CATEGORIES.find(c => c.id === categoryFilter)?.label || 'Categoria')
+                : 'Todas as receitas';
 
     return (
       <div className="min-h-screen bg-[#f9f5ef] text-[#522f19]">
@@ -967,9 +1164,16 @@ const App: React.FC = () => {
             <aside className="w-full md:w-64 shrink-0 space-y-3">
               <div className="bg-[#fffcf7] p-2.5 rounded-3xl shadow-[0_6px_24px_-10px_rgba(82,47,25,0.12)] border border-[#522f19]/12 overflow-hidden space-y-1.5">
                 <button
-                  onClick={() => { setCategoryFilter('favoritos'); setIsCategoriesOpen(false); setShowBirthdays(false); }}
+                  onClick={() => {
+                    setCategoryFilter('favoritos');
+                    setAuthorFilter(null);
+                    setShowInactiveOnly(false);
+                    setIsCategoriesOpen(false);
+                    setIsAuthorsOpen(false);
+                    setShowBirthdays(false);
+                  }}
                   className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center transition-all ${
-                    categoryFilter === 'favoritos' && !showBirthdays
+                    categoryFilter === 'favoritos' && !authorFilter && !showInactiveOnly && !showBirthdays
                       ? 'bg-[#AF5E33] text-[#f9f5ef] shadow-sm'
                       : 'text-[#522f19] hover:bg-[#f2ebe0]'
                   }`}
@@ -978,9 +1182,39 @@ const App: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => { setCategoryFilter('all'); setIsCategoriesOpen(false); setShowBirthdays(false); }}
+                  onClick={() => {
+                    setCategoryFilter('feitas');
+                    setAuthorFilter(null);
+                    setShowInactiveOnly(false);
+                    setIsCategoriesOpen(false);
+                    setIsAuthorsOpen(false);
+                    setShowBirthdays(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center justify-between transition-all ${
+                    categoryFilter === 'feitas' && !authorFilter && !showInactiveOnly && !showBirthdays
+                      ? 'bg-[#2d6a4f] text-[#f9f5ef] shadow-sm'
+                      : 'text-[#522f19] hover:bg-[#f2ebe0]'
+                  }`}
+                >
+                  <span className="truncate">Já fiz e gostei</span>
+                  <span className={`text-xs tabular-nums ${
+                    categoryFilter === 'feitas' && !authorFilter && !showInactiveOnly && !showBirthdays ? 'text-[#f9f5ef]/85' : 'text-[#522f19]/55'
+                  }`}>
+                    ({madeAndLikedCount})
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setCategoryFilter('all');
+                    setAuthorFilter(null);
+                    setShowInactiveOnly(false);
+                    setIsCategoriesOpen(false);
+                    setIsAuthorsOpen(false);
+                    setShowBirthdays(false);
+                  }}
                   className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center transition-all ${
-                    categoryFilter === 'all' && !showBirthdays
+                    categoryFilter === 'all' && !authorFilter && !showInactiveOnly && !showBirthdays
                       ? 'bg-[#AF5E33] text-[#f9f5ef] shadow-sm'
                       : 'text-[#522f19] hover:bg-[#f2ebe0]'
                   }`}
@@ -989,7 +1223,59 @@ const App: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => { setShowBirthdays(true); setIsCategoriesOpen(false); }}
+                  onClick={() => {
+                    setCategoryFilter('all');
+                    setAuthorFilter('__mine__');
+                    setShowInactiveOnly(false);
+                    setIsCategoriesOpen(false);
+                    setIsAuthorsOpen(false);
+                    setShowBirthdays(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center justify-between transition-all ${
+                    authorFilter === '__mine__' && !showBirthdays
+                      ? 'bg-[#AF5E33] text-[#f9f5ef] shadow-sm'
+                      : 'text-[#522f19] hover:bg-[#f2ebe0]'
+                  }`}
+                >
+                  <span>Minhas Receitas</span>
+                  <span className={`text-xs tabular-nums ${
+                    authorFilter === '__mine__' && !showBirthdays ? 'text-[#f9f5ef]/85' : 'text-[#522f19]/55'
+                  }`}>
+                    ({myRecipesCount})
+                  </span>
+                </button>
+
+                {isActiveUserPati && (
+                  <button
+                    onClick={() => {
+                      setCategoryFilter('all');
+                      setAuthorFilter(null);
+                      setShowInactiveOnly(true);
+                      setIsCategoriesOpen(false);
+                      setIsAuthorsOpen(false);
+                      setShowBirthdays(false);
+                    }}
+                    className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center justify-between transition-all ${
+                      showInactiveOnly && !showBirthdays
+                        ? 'bg-[#522f19] text-[#f9f5ef] shadow-sm'
+                        : 'text-[#522f19] hover:bg-[#f2ebe0]'
+                    }`}
+                  >
+                    <span>Inativas</span>
+                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full tabular-nums ${
+                      showInactiveOnly && !showBirthdays ? 'bg-[#AF5E33] text-[#f9f5ef]' : 'bg-[#522f19]/10 text-[#522f19]'
+                    }`}>
+                      {inactiveCount}
+                    </span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => {
+                    setShowBirthdays(true);
+                    setIsCategoriesOpen(false);
+                    setIsAuthorsOpen(false);
+                  }}
                   className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center justify-between transition-all ${
                     showBirthdays
                       ? 'bg-[#522f19] text-[#f9f5ef] shadow-sm'
@@ -1007,7 +1293,61 @@ const App: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => setIsCategoriesOpen(!isCategoriesOpen)}
+                  onClick={() => {
+                    setIsAuthorsOpen(!isAuthorsOpen);
+                    setIsCategoriesOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center justify-between transition-all ${
+                    isAuthorsOpen
+                      ? 'bg-[#f2ebe0] text-[#522f19]'
+                      : 'text-[#522f19] hover:bg-[#f2ebe0]'
+                  }`}
+                >
+                  <span>Por Cozinheira</span>
+                  <span className={`text-xs transition-transform duration-300 ${isAuthorsOpen ? 'rotate-180' : ''}`}>▼</span>
+                </button>
+
+                <div className={`transition-all duration-300 overflow-hidden ${isAuthorsOpen ? 'max-h-[420px] pt-1 opacity-100 overflow-y-auto' : 'max-h-0 opacity-0'}`}>
+                  {authorOptions.map(author => (
+                    <button
+                      key={author.key}
+                      onClick={() => {
+                        setAuthorFilter(author.key);
+                        setCategoryFilter('all');
+                        setShowInactiveOnly(false);
+                        setIsAuthorsOpen(false);
+                        setShowBirthdays(false);
+                      }}
+                      className={`w-full text-left px-4 py-2 rounded-xl font-medium text-sm flex items-center justify-between gap-2 transition-all ${
+                        authorFilter === author.key && !showBirthdays
+                          ? 'text-[#f9f5ef] bg-[#AF5E33] font-semibold'
+                          : 'text-[#522f19]/80 hover:bg-[#f2ebe0]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <img
+                          src={author.photoUrl || DEFAULT_PROFILE_IMAGE}
+                          alt={author.label}
+                          referrerPolicy="no-referrer"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
+                          className="w-6 h-6 rounded-full object-cover border border-[#522f19]/15 shrink-0"
+                        />
+                        <span className="truncate">{author.label}</span>
+                      </div>
+                      <span className={`text-xs tabular-nums shrink-0 ${
+                        authorFilter === author.key && !showBirthdays ? 'text-[#f9f5ef]/85' : 'text-[#522f19]/55'
+                      }`}>
+                        ({author.count})
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => {
+                    setIsCategoriesOpen(!isCategoriesOpen);
+                    setIsAuthorsOpen(false);
+                  }}
                   className={`w-full text-left px-4 py-3 rounded-2xl font-semibold text-sm flex items-center justify-between transition-all ${
                     isCategoriesOpen
                       ? 'bg-[#f2ebe0] text-[#522f19]'
@@ -1018,18 +1358,29 @@ const App: React.FC = () => {
                   <span className={`text-xs transition-transform duration-300 ${isCategoriesOpen ? 'rotate-180' : ''}`}>▼</span>
                 </button>
 
-                <div className={`transition-all duration-300 overflow-hidden ${isCategoriesOpen ? 'max-h-[520px] pt-1 opacity-100' : 'max-h-0 opacity-0'}`}>
+                <div className={`transition-all duration-300 overflow-hidden ${isCategoriesOpen ? 'max-h-[600px] pt-1 opacity-100' : 'max-h-0 opacity-0'}`}>
                   {CATEGORIES.map(cat => (
                     <button
                       key={cat.id}
-                      onClick={() => { setCategoryFilter(cat.id); setIsCategoriesOpen(false); setShowBirthdays(false); }}
-                      className={`w-full text-left px-4 py-2 rounded-xl font-medium text-sm transition-all ${
-                        categoryFilter === cat.id && !showBirthdays
+                      onClick={() => {
+                        setCategoryFilter(cat.id);
+                        setAuthorFilter(null);
+                        setShowInactiveOnly(false);
+                        setIsCategoriesOpen(false);
+                        setShowBirthdays(false);
+                      }}
+                      className={`w-full text-left px-4 py-2 rounded-xl font-medium text-sm flex items-center justify-between gap-2 transition-all ${
+                        categoryFilter === cat.id && !authorFilter && !showInactiveOnly && !showBirthdays
                           ? 'text-[#f9f5ef] bg-[#AF5E33] font-semibold'
                           : 'text-[#522f19]/80 hover:bg-[#f2ebe0]'
                       }`}
                     >
-                      {cat.label}
+                      <span className="truncate">{cat.label}</span>
+                      <span className={`text-xs tabular-nums shrink-0 ${
+                        categoryFilter === cat.id && !authorFilter && !showInactiveOnly && !showBirthdays ? 'text-[#f9f5ef]/85' : 'text-[#522f19]/55'
+                      }`}>
+                        ({categoryCounts[cat.id] || 0})
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1108,26 +1459,76 @@ const App: React.FC = () => {
             )}
 
             {view === AppView.HOME && !showBirthdays && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-7">
-                {!recipesLoaded && recipes.length === 0 ? (
-                  Array.from({ length: 4 }).map((_, idx) => (
-                    <div key={idx} className="bg-[#fffcf7] rounded-[28px] p-3.5 border border-[#522f19]/12 animate-pulse">
-                      <div className="aspect-[4/3] rounded-[22px] bg-[#e8dfd2] mb-4" />
-                      <div className="px-2 space-y-2.5">
-                        <div className="h-5 w-3/4 rounded-full bg-[#e8dfd2]" />
-                        <div className="h-3.5 w-full rounded-full bg-[#e8dfd2]/80" />
-                        <div className="h-3.5 w-2/3 rounded-full bg-[#e8dfd2]/80" />
-                      </div>
+              <div className="space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+                  <div className="flex items-center gap-2.5">
+                    {activeAuthorPhoto && (
+                      <img
+                        src={activeAuthorPhoto}
+                        alt={activeSectionTitle}
+                        referrerPolicy="no-referrer"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_PROFILE_IMAGE; }}
+                        className="w-9 h-9 rounded-full object-cover border-2 border-[#AF5E33] shadow-xs shrink-0"
+                      />
+                    )}
+                    <div className="flex items-baseline gap-2">
+                      <h2 className="font-display font-bold text-lg sm:text-xl text-[#522f19]">
+                        {activeSectionTitle}
+                      </h2>
+                      <span className="text-xs font-semibold text-[#522f19]/55 tabular-nums">
+                        ({displayedRecipes.length})
+                      </span>
                     </div>
-                  ))
-                ) : filteredRecipes.length === 0 ? (
-                  <div className="col-span-full text-center py-24 text-[#522f19]/60 font-display italic text-lg">
-                    Poxa, nenhuma receita encontrada aqui! Cozinhe algo novo!
                   </div>
-                ) : (
-                  filteredRecipes.map(recipe => {
+                  <div className="inline-flex items-center p-1 rounded-full bg-[#fffcf7] border border-[#522f19]/12 shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setSortOrder('alpha')}
+                      className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                        sortOrder === 'alpha'
+                          ? 'bg-[#AF5E33] text-[#f9f5ef] shadow-xs'
+                          : 'text-[#522f19]/70 hover:text-[#522f19]'
+                      }`}
+                    >
+                      A–Z
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSortOrder('recent')}
+                      className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                        sortOrder === 'recent'
+                          ? 'bg-[#AF5E33] text-[#f9f5ef] shadow-xs'
+                          : 'text-[#522f19]/70 hover:text-[#522f19]'
+                      }`}
+                    >
+                      Mais recentes
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-7">
+                  {!recipesLoaded && recipes.length === 0 ? (
+                    Array.from({ length: 4 }).map((_, idx) => (
+                      <div key={idx} className="bg-[#fffcf7] rounded-[28px] p-3.5 border border-[#522f19]/12 animate-pulse">
+                        <div className="aspect-[4/3] rounded-[22px] bg-[#e8dfd2] mb-4" />
+                        <div className="px-2 space-y-2.5">
+                          <div className="h-5 w-3/4 rounded-full bg-[#e8dfd2]" />
+                          <div className="h-3.5 w-full rounded-full bg-[#e8dfd2]/80" />
+                          <div className="h-3.5 w-2/3 rounded-full bg-[#e8dfd2]/80" />
+                        </div>
+                      </div>
+                    ))
+                  ) : displayedRecipes.length === 0 ? (
+                    <div className="col-span-full text-center py-24 text-[#522f19]/60 font-display italic text-lg">
+                      {showInactiveOnly
+                        ? 'Nenhuma receita inativa no momento.'
+                        : 'Poxa, nenhuma receita encontrada aqui! Cozinhe algo novo!'}
+                    </div>
+                  ) : (
+                    displayedRecipes.map(recipe => {
                     const author = profiles.find(p => p.id === recipe.authorId);
                     const isFavoritedByMe = recipe.favoritedBy?.includes(activeProfile?.id || '');
+                    const isMadeAndLikedByMe = recipe.madeAndLikedBy?.includes(activeProfile?.id || '');
                     const categoryLabel = CATEGORIES.find(c => c.id === recipe.category)?.label;
                     const snippetSource = recipe.ingredients
                       ? recipe.ingredients.replace(/\s*\n+\s*/g, ', ').trim()
@@ -1200,6 +1601,21 @@ const App: React.FC = () => {
                             >
                               {isFavoritedByMe ? '❤️' : '🤍'}
                             </button>
+                            <button
+                              type="button"
+                              title={isMadeAndLikedByMe ? 'Já fiz e gostei! (toque para remover)' : 'Marcar como Já fiz e gostei'}
+                              aria-label={isMadeAndLikedByMe ? 'Remover de Já fiz e gostei' : 'Marcar como Já fiz e gostei'}
+                              onClick={(e) => { e.stopPropagation(); toggleMadeAndLiked(recipe.id); }}
+                              className={`w-9 h-9 rounded-full border shadow-sm flex items-center justify-center transition-all hover:scale-110 active:scale-95 ${
+                                isMadeAndLikedByMe
+                                  ? 'bg-[#2d6a4f] text-[#f9f5ef] border-[#2d6a4f] opacity-100'
+                                  : 'bg-[#fffcf7]/95 backdrop-blur-sm text-[#522f19]/70 border-[#522f19]/10 opacity-80 hover:opacity-100 hover:text-[#2d6a4f] hover:border-[#2d6a4f]/40'
+                              }`}
+                            >
+                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z" />
+                              </svg>
+                            </button>
                             {recipe.externalLink && (
                               <div
                                 className="w-9 h-9 rounded-full bg-[#AF5E33] text-[#f9f5ef] shadow-sm flex items-center justify-center text-xs"
@@ -1255,6 +1671,7 @@ const App: React.FC = () => {
                     );
                   })
                 )}
+                </div>
               </div>
             )}
 
@@ -1263,12 +1680,14 @@ const App: React.FC = () => {
                 recipe={currentDetailRecipe}
                 activeProfile={activeProfile}
                 canManage={isRecipeAuthor(currentDetailRecipe, activeProfile)}
+                shareUrl={getRecipeShareUrl(currentDetailRecipe.id)}
                 onBack={() => setView(AppView.HOME)}
                 onEdit={() => { setEditingRecipe(currentDetailRecipe); setView(AppView.RECIPE_EDIT); }}
                 onDelete={() => deleteRecipe(currentDetailRecipe.id)}
                 onToggleFavorite={() => toggleFavorite(currentDetailRecipe.id)}
+                onToggleMadeAndLiked={() => toggleMadeAndLiked(currentDetailRecipe.id)}
                 onAddComment={(t: string) => addComment(currentDetailRecipe.id, t)}
-                onWhatsAppShare={() => handleWhatsAppShare(currentDetailRecipe.title)}
+                onWhatsAppShare={() => handleWhatsAppShare(currentDetailRecipe.title, currentDetailRecipe.id)}
               />
             )}
 
@@ -1310,10 +1729,12 @@ const RecipeDetailView = ({
   recipe,
   activeProfile,
   canManage,
+  shareUrl,
   onBack,
   onEdit,
   onDelete,
   onToggleFavorite,
+  onToggleMadeAndLiked,
   onAddComment,
   onWhatsAppShare
 }: any) => {
@@ -1322,12 +1743,64 @@ const RecipeDetailView = ({
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [copied, setCopied] = useState(false);
+  const [shoppingCopied, setShoppingCopied] = useState(false);
+  const [checkedIngredients, setCheckedIngredients] = useState<Record<number, boolean>>({});
+  const [checkedSteps, setCheckedSteps] = useState<Record<number, boolean>>({});
+  const [isWakeLockActive, setIsWakeLockActive] = useState(false);
+  const wakeLockSentinelRef = useRef<any>(null);
+  const supportsWakeLock = typeof navigator !== 'undefined' && 'wakeLock' in navigator;
 
   useEffect(() => {
     setAdjustedIngredients(recipe.ingredients);
     setPortionFactor(1);
     setCopied(false);
+    setShoppingCopied(false);
+    setCheckedIngredients({});
+    setCheckedSteps({});
   }, [recipe.id, recipe.ingredients]);
+
+  useEffect(() => {
+    const releaseLock = async () => {
+      try {
+        if (wakeLockSentinelRef.current) {
+          await wakeLockSentinelRef.current.release();
+          wakeLockSentinelRef.current = null;
+        }
+      } catch {
+        // ignore release error
+      }
+    };
+
+    const requestLock = async () => {
+      if (!supportsWakeLock || !isWakeLockActive) return;
+      try {
+        wakeLockSentinelRef.current = await (navigator as any).wakeLock.request('screen');
+        wakeLockSentinelRef.current?.addEventListener?.('release', () => {
+          wakeLockSentinelRef.current = null;
+        });
+      } catch {
+        setIsWakeLockActive(false);
+      }
+    };
+
+    if (isWakeLockActive) {
+      requestLock();
+    } else {
+      releaseLock();
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isWakeLockActive && !wakeLockSentinelRef.current) {
+        requestLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      releaseLock();
+    };
+  }, [isWakeLockActive, supportsWakeLock]);
 
   const handleAdjust = async (val: number) => {
     setPortionFactor(val);
@@ -1343,9 +1816,31 @@ const RecipeDetailView = ({
   };
 
   const isFavoritedByMe = recipe.favoritedBy?.includes(activeProfile?.id || '');
+  const isMadeAndLikedByMe = recipe.madeAndLikedBy?.includes(activeProfile?.id || '');
   const categoryLabel = CATEGORIES.find(c => c.id === recipe.category)?.label;
   const ingredientLines = formatIngredientsLines(adjustedIngredients);
   const instructionSteps = formatInstructionSteps(recipe.instructions);
+  const hasCheckedItems =
+    Object.values(checkedIngredients).some(Boolean) || Object.values(checkedSteps).some(Boolean);
+
+  const copyTextToClipboard = async (textToCopy: string) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy);
+        return;
+      }
+    } catch {
+      // fallback below
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = textToCopy;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  };
 
   const handleCopyRecipe = async () => {
     const sections: string[] = [];
@@ -1364,44 +1859,56 @@ const RecipeDetailView = ({
     if (recipe.externalLink) {
       sections.push(`\nLink original: ${recipe.externalLink}`);
     }
-    const textToCopy = sections.join('\n');
-
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(textToCopy);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = textToCopy;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = textToCopy;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+    if (shareUrl) {
+      sections.push(`\nAbrir no app: ${shareUrl}`);
     }
+    await copyTextToClipboard(sections.join('\n'));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  const buildShoppingListText = () => {
+    const titleSuffix = portionFactor !== 1 ? ` (${portionFactor}x)` : '';
+    return `🛒 *Lista de compras — ${recipe.title}${titleSuffix}*\n\n${ingredientLines.map(item => `• ${item}`).join('\n')}`;
+  };
+
+  const handleCopyShoppingList = async () => {
+    if (ingredientLines.length === 0) return;
+    await copyTextToClipboard(buildShoppingListText());
+    setShoppingCopied(true);
+    setTimeout(() => setShoppingCopied(false), 2500);
+  };
+
+  const handleSendShoppingListWhatsApp = () => {
+    if (ingredientLines.length === 0) return;
+    const message = encodeURIComponent(buildShoppingListText());
+    window.open(`https://api.whatsapp.com/send?text=${message}`, '_blank');
   };
 
   return (
     <div className="bg-[#fffcf7] rounded-3xl p-6 sm:p-8 shadow-[0_10px_30px_-12px_rgba(82,47,25,0.14)] max-w-3xl mx-auto border border-[#522f19]/12 space-y-8 fade-in">
-      <div className="flex justify-between items-center gap-3">
+      <div className="flex flex-wrap justify-between items-center gap-3">
         <button onClick={onBack} className="text-[#AF5E33] font-semibold flex items-center gap-2 hover:underline">
           ← Voltar
         </button>
-        <div className="flex gap-3 sm:gap-4 items-center">
+        <div className="flex flex-wrap gap-2.5 sm:gap-3.5 items-center">
+          {supportsWakeLock && (
+            <button
+              type="button"
+              onClick={() => setIsWakeLockActive(prev => !prev)}
+              title="Manter a tela do celular acesa enquanto cozinha"
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all active:scale-95 ${
+                isWakeLockActive
+                  ? 'bg-[#522f19] text-[#f9f5ef] border-[#522f19]'
+                  : 'bg-[#f9f5ef] text-[#522f19] border-[#522f19]/15 hover:border-[#AF5E33] hover:text-[#AF5E33]'
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z" />
+              </svg>
+              <span>{isWakeLockActive ? 'Tela acesa ✓' : 'Tela acesa'}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handleCopyRecipe}
@@ -1428,8 +1935,23 @@ const RecipeDetailView = ({
               </>
             )}
           </button>
-          <button onClick={onWhatsAppShare} title="Compartilhar no WhatsApp" className="text-[#2d6a4f] hover:scale-110 transition-transform">
+          <button onClick={onWhatsAppShare} title="Compartilhar link da receita no WhatsApp" className="text-[#2d6a4f] hover:scale-110 transition-transform">
             <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 448 512"><path d="M380.9 97.1C339 55.1 283.2 32 223.9 32c-122.4 0-222 99.6-222 222 0 39.1 10.2 77.3 29.6 111L0 480l117.7-30.9c32.4 17.7 68.9 27 106.1 27h.1c122.3 0 224.1-99.6 224.1-222 0-59.3-25.2-115-67.1-157zm-157 341.6c-33.2 0-65.7-8.9-94-25.7l-6.7-4-69.8 18.3L72 359.2l-4.4-7c-18.5-29.4-28.2-63.3-28.2-98.2 0-101.7 82.8-184.5 184.6-184.5 49.3 0 95.6 19.2 130.4 54.1 34.8 34.9 56.2 81.2 56.1 130.5 0 101.8-84.9 184.6-186.6 184.6zm101.2-138.2c-5.5-2.8-32.8-16.2-37.9-18-5.1-1.9-8.8-2.8-12.5 2.8-3.7 5.6-14.3 18-17.6 21.8-3.2 3.7-6.5 4.2-12 1.4-5.5-2.8-23.4-8.6-44.6-27.6-16.5-14.7-27.6-32.8-30.8-38.4-3.2-5.6-.3-8.6 2.5-11.4 2.5-2.5 5.5-6.5 8.3-9.8 2.8-3.2 3.7-5.5 5.5-9.2 1.9-3.7.9-7-.5-9.8-1.4-2.8-12.5-30.1-17.1-41.2-4.5-10.8-9.1-9.3-12.5-9.5-3.2-.2-6.9-.2-10.6-.2-3.7 0-9.7 1.4-14.8 6.9-5.1 5.6-19.4 19-19.4 46.3 0 27.3 19.9 53.7 22.6 57.4 2.8 3.7 39.1 59.7 94.8 83.8 13.2 5.8 23.5 9.2 31.5 11.8 13.3 4.2 25.4 3.6 35 2.2 10.7-1.6 32.8-13.4 37.4-26.4 4.6-13 4.6-24.1 3.2-26.4-1.3-2.5-5-3.9-10.5-6.6z"/></svg>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleMadeAndLiked}
+            title={isMadeAndLikedByMe ? 'Remover de Já fiz e gostei' : 'Marcar como Já fiz e gostei'}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all active:scale-95 ${
+              isMadeAndLikedByMe
+                ? 'bg-[#2d6a4f] text-[#f9f5ef] border-[#2d6a4f]'
+                : 'bg-[#f9f5ef] text-[#522f19] border-[#522f19]/15 hover:border-[#2d6a4f] hover:text-[#2d6a4f]'
+            }`}
+          >
+            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z" />
+            </svg>
+            <span>{isMadeAndLikedByMe ? 'Já fiz e gostei ✓' : 'Já fiz e gostei'}</span>
           </button>
           <button onClick={onToggleFavorite} className="text-2xl transition-transform active:scale-125">
             {isFavoritedByMe ? '❤️' : '🤍'}
@@ -1444,13 +1966,13 @@ const RecipeDetailView = ({
       </div>
 
       <div className="bg-[#f2ebe0] rounded-3xl p-3">
-        <div className="relative group overflow-hidden rounded-2xl shadow-md">
+        <div className="relative group aspect-[4/3] overflow-hidden rounded-2xl shadow-md bg-[#e8dfd2]">
           <img
             src={recipe.imageUrl || DEFAULT_RECIPE_IMAGE}
             alt={recipe.title}
             referrerPolicy="no-referrer"
             onError={(e) => { (e.currentTarget as HTMLImageElement).src = DEFAULT_RECIPE_IMAGE; }}
-            className="w-full h-80 object-cover transition-transform duration-700 group-hover:scale-105"
+            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
           />
           {canManage && (
             <button
@@ -1490,8 +2012,8 @@ const RecipeDetailView = ({
         )}
       </div>
 
-      <div className="bg-[#f9f5ef] p-6 rounded-2xl border border-[#522f19]/12">
-        <div className="flex justify-between items-center mb-4">
+      <div className="bg-[#f9f5ef] p-6 rounded-2xl border border-[#522f19]/12 space-y-4">
+        <div className="flex flex-wrap justify-between items-center gap-3">
           <h4 className="font-display font-bold text-[#522f19] text-lg flex items-center gap-2.5">
             <span className="w-8 h-8 rounded-xl bg-[#f2ebe0] text-[#522f19] inline-flex items-center justify-center shrink-0">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -1517,14 +2039,68 @@ const RecipeDetailView = ({
           </div>
         </div>
         {ingredientLines.length > 0 ? (
-          <ul className={`space-y-2 text-[#522f19]/90 text-sm leading-relaxed ${isAdjusting ? 'opacity-30' : ''}`}>
-            {ingredientLines.map((item, idx) => (
-              <li key={idx} className="flex items-start gap-2.5">
-                <span className="text-[#AF5E33] font-bold leading-relaxed select-none">•</span>
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="text-[11px] text-[#522f19]/55">
+              Toque em cada item para marcar o que já separou
+            </p>
+            <ul className={`space-y-2 text-[#522f19]/90 text-sm leading-relaxed ${isAdjusting ? 'opacity-30' : ''}`}>
+              {ingredientLines.map((item, idx) => {
+                const isChecked = Boolean(checkedIngredients[idx]);
+                return (
+                  <li key={idx}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCheckedIngredients(prev => ({ ...prev, [idx]: !prev[idx] }))
+                      }
+                      className="w-full text-left flex items-start gap-2.5 py-1 rounded-lg hover:bg-[#f2ebe0]/60 px-1.5 -mx-1.5 transition-colors cursor-pointer"
+                    >
+                      <span
+                        className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                          isChecked
+                            ? 'bg-[#AF5E33] border-[#AF5E33] text-[#f9f5ef]'
+                            : 'bg-[#fffcf7] border-[#522f19]/30'
+                        }`}
+                      >
+                        {isChecked && (
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                      </span>
+                      <span className={isChecked ? 'line-through opacity-50' : ''}>{item}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="pt-3 border-t border-[#522f19]/10 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCopyShoppingList}
+                className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-all active:scale-95 ${
+                  shoppingCopied
+                    ? 'bg-[#2d6a4f] text-[#f9f5ef] border-[#2d6a4f]'
+                    : 'bg-[#fffcf7] text-[#522f19] border-[#522f19]/15 hover:border-[#AF5E33] hover:text-[#AF5E33]'
+                }`}
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
+                </svg>
+                <span>{shoppingCopied ? 'Lista copiada!' : 'Copiar lista de compras'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleSendShoppingListWhatsApp}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#edf4ef] text-[#2d6a4f] border border-[#2d6a4f]/20 hover:bg-[#e1ede4] transition-all active:scale-95"
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 448 512">
+                  <path d="M380.9 97.1C339 55.1 283.2 32 223.9 32c-122.4 0-222 99.6-222 222 0 39.1 10.2 77.3 29.6 111L0 480l117.7-30.9c32.4 17.7 68.9 27 106.1 27h.1c122.3 0 224.1-99.6 224.1-222 0-59.3-25.2-115-67.1-157zm-157 341.6c-33.2 0-65.7-8.9-94-25.7l-6.7-4-69.8 18.3L72 359.2l-4.4-7c-18.5-29.4-28.2-63.3-28.2-98.2 0-101.7 82.8-184.5 184.6-184.5 49.3 0 95.6 19.2 130.4 54.1 34.8 34.9 56.2 81.2 56.1 130.5 0 101.8-84.9 184.6-186.6 184.6zm101.2-138.2c-5.5-2.8-32.8-16.2-37.9-18-5.1-1.9-8.8-2.8-12.5 2.8-3.7 5.6-14.3 18-17.6 21.8-3.2 3.7-6.5 4.2-12 1.4-5.5-2.8-23.4-8.6-44.6-27.6-16.5-14.7-27.6-32.8-30.8-38.4-3.2-5.6-.3-8.6 2.5-11.4 2.5-2.5 5.5-6.5 8.3-9.8 2.8-3.2 3.7-5.5 5.5-9.2 1.9-3.7.9-7-.5-9.8-1.4-2.8-12.5-30.1-17.1-41.2-4.5-10.8-9.1-9.3-12.5-9.5-3.2-.2-6.9-.2-10.6-.2-3.7 0-9.7 1.4-14.8 6.9-5.1 5.6-19.4 19-19.4 46.3 0 27.3 19.9 53.7 22.6 57.4 2.8 3.7 39.1 59.7 94.8 83.8 13.2 5.8 23.5 9.2 31.5 11.8 13.3 4.2 25.4 3.6 35 2.2 10.7-1.6 32.8-13.4 37.4-26.4 4.6-13 4.6-24.1 3.2-26.4-1.3-2.5-5-3.9-10.5-6.6z"/>
+                </svg>
+                <span>Enviar lista no WhatsApp</span>
+              </button>
+            </div>
+          </>
         ) : (
           <p className="text-sm text-[#522f19]/60 italic">Nenhum ingrediente informado.</p>
         )}
@@ -1532,29 +2108,55 @@ const RecipeDetailView = ({
 
       <div className="space-y-6">
         <div className="space-y-4">
-          <h4 className="font-display font-bold text-[#522f19] text-lg flex items-center gap-2.5">
-            <span className="w-8 h-8 rounded-xl bg-[#f2ebe0] text-[#522f19] inline-flex items-center justify-center shrink-0">
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8.1 13.34l2.83-2.83L3.91 3.5a4.008 4.008 0 000 5.66l4.19 4.18zm6.78-1.81c1.53.71 3.68.21 5.27-1.38 1.91-1.91 2.28-4.65.81-6.12-1.46-1.46-4.2-1.1-6.12.81-1.59 1.59-2.09 3.74-1.38 5.27L3.7 19.87l1.41 1.41L12 14.41l6.88 6.88 1.41-1.41L13.41 13l1.47-1.47z" />
-              </svg>
-            </span>
-            <span>Modo de Preparo</span>
-          </h4>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="font-display font-bold text-[#522f19] text-lg flex items-center gap-2.5">
+              <span className="w-8 h-8 rounded-xl bg-[#f2ebe0] text-[#522f19] inline-flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8.1 13.34l2.83-2.83L3.91 3.5a4.008 4.008 0 000 5.66l4.19 4.18zm6.78-1.81c1.53.71 3.68.21 5.27-1.38 1.91-1.91 2.28-4.65.81-6.12-1.46-1.46-4.2-1.1-6.12.81-1.59 1.59-2.09 3.74-1.38 5.27L3.7 19.87l1.41 1.41L12 14.41l6.88 6.88 1.41-1.41L13.41 13l1.47-1.47z" />
+                </svg>
+              </span>
+              <span>Modo de Preparo</span>
+            </h4>
+            {hasCheckedItems && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCheckedIngredients({});
+                  setCheckedSteps({});
+                }}
+                className="text-xs font-semibold text-[#AF5E33] hover:underline"
+              >
+                Limpar marcações
+              </button>
+            )}
+          </div>
           {instructionSteps.length > 0 ? (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {instructionSteps.map((step, idx) => {
                 const match = step.match(/^(\d+[.)])\s*(.*)$/);
+                const isDone = Boolean(checkedSteps[idx]);
                 return (
-                  <div key={idx} className="text-[#522f19]/90 leading-relaxed text-sm flex items-start gap-2.5">
-                    {match ? (
-                      <>
-                        <span className="font-bold text-[#AF5E33] shrink-0 tabular-nums">{match[1]}</span>
-                        <span>{match[2]}</span>
-                      </>
-                    ) : (
-                      <span>{step}</span>
-                    )}
-                  </div>
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setCheckedSteps(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                    className={`w-full text-left text-[#522f19]/90 leading-relaxed text-sm flex items-start gap-2.5 p-2 rounded-xl transition-colors cursor-pointer ${
+                      isDone ? 'bg-[#f9f5ef]' : 'hover:bg-[#f9f5ef]'
+                    }`}
+                  >
+                    <span
+                      className={`mt-0.5 w-5 h-5 rounded-full border flex items-center justify-center shrink-0 text-[11px] font-bold transition-colors ${
+                        isDone
+                          ? 'bg-[#AF5E33] border-[#AF5E33] text-[#f9f5ef]'
+                          : 'bg-[#fffcf7] border-[#AF5E33]/40 text-[#AF5E33]'
+                      }`}
+                    >
+                      {isDone ? '✓' : match ? match[1].replace(/[.)]/g, '') : idx + 1}
+                    </span>
+                    <span className={isDone ? 'line-through opacity-50' : ''}>
+                      {match ? match[2] : step}
+                    </span>
+                  </button>
                 );
               })}
             </div>
@@ -1669,11 +2271,30 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
     }
   };
 
+  const applyAiRecipeResult = (
+    result: { title?: string; ingredients?: string; instructions?: string; category?: string },
+    extra: Partial<Recipe> = {}
+  ) => {
+    const cleanIngredients = result.ingredients
+      ? formatIngredientsLines(result.ingredients).join('\n')
+      : '';
+    const cleanInstructions = result.instructions
+      ? formatInstructionSteps(result.instructions).join('\n')
+      : '';
+    setFormData(prev => ({
+      ...prev,
+      ...result,
+      ingredients: cleanIngredients || result.ingredients || prev.ingredients || '',
+      instructions: cleanInstructions || result.instructions || prev.instructions || '',
+      ...extra,
+    }));
+  };
+
   const processScannedImageDataUrl = async (rawDataUrl: string) => {
     setIsAiLoading(true);
     let compressed = rawDataUrl;
     try {
-      compressed = await compressImage(rawDataUrl, 1200, 0.85);
+      compressed = await compressImage(rawDataUrl, 1000, 0.78);
       const [header, base64Data] = compressed.split(',');
       const mimeMatch = header?.match(/data:(.*?);base64/);
       const mimeType = mimeMatch?.[1] || 'image/jpeg';
@@ -1681,7 +2302,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
         throw new Error('Imagem inválida para leitura.');
       }
       const result = await gemini.transcribeImage(base64Data, mimeType);
-      setFormData(prev => ({ ...prev, ...result, imageUrl: compressed }));
+      applyAiRecipeResult(result, { imageUrl: compressed });
       setStep('form');
     } catch (err: any) {
       alert(err?.message || 'Não foi possível transcrever automaticamente por IA. Você pode preencher os dados da receita manualmente.');
@@ -1744,7 +2365,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
       return;
     }
     const canvas = document.createElement('canvas');
-    const maxWidth = 1200;
+    const maxWidth = 1000;
     let width = video.videoWidth;
     let height = video.videoHeight;
     if (width > maxWidth) {
@@ -1756,7 +2377,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, width, height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
     stopCameraStream();
     setIsCameraOpen(false);
     await processScannedImageDataUrl(dataUrl);
@@ -1773,7 +2394,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
     setIsAiLoading(true);
     try {
       const result = await gemini.transcribeVideoLink(videoUrl);
-      setFormData(prev => ({ ...prev, ...result, externalLink: videoUrl }));
+      applyAiRecipeResult(result, { externalLink: videoUrl });
       setStep('form');
     } catch (err: any) {
       alert(err?.message || 'Não foi possível transcrever o vídeo pela IA. O link foi salvo e você pode preencher a receita manualmente.');
@@ -1789,7 +2410,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
     setIsAiLoading(true);
     try {
       const result = await gemini.getRecipeSuggestions(suggestionInput);
-      setFormData(prev => ({ ...prev, ...result }));
+      applyAiRecipeResult(result);
       setStep('form');
     } catch (err: any) {
       alert(err?.message || 'Não foi possível gerar sugestão por IA no momento.');
@@ -1798,11 +2419,130 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
     }
   };
 
+  const cameraModal = isCameraOpen
+    ? createPortal(
+        <div className="fixed inset-0 bg-[#522f19]/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-3 pt-4 sm:p-4 z-[100] overflow-y-auto">
+          <div className="bg-[#fffcf7] rounded-3xl p-5 sm:p-6 max-w-md w-full space-y-4 shadow-2xl border border-[#522f19]/15 max-h-[92dvh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-display font-bold text-[#522f19]">Fotografar Receita</h3>
+              <button
+                type="button"
+                onClick={handleCloseCamera}
+                className="text-xs font-semibold text-[#522f19]/60 hover:text-[#522f19] px-2 py-1"
+              >
+                Fechar ✕
+              </button>
+            </div>
+            <div className="relative rounded-2xl overflow-hidden bg-[#522f19] aspect-[4/3]">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+              />
+            </div>
+            {cameraError && (
+              <p className="text-xs text-red-600 text-center font-medium">{cameraError}</p>
+            )}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={handleCloseCamera}
+                className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleCapturePhoto}
+                className="flex-[2] py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider shadow-md transition-all active:scale-95"
+              >
+                Tirar Foto e Ler Receita
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )
+    : null;
+
+  const aiLoadingOverlay = isAiLoading
+    ? createPortal(
+        <div className="fixed inset-0 bg-[#f9f5ef]/85 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-[110] px-6 text-center">
+          <div className="w-10 h-10 rounded-full border-4 border-[#AF5E33]/25 border-t-[#AF5E33] animate-spin" />
+          <p className="font-display italic text-2xl text-[#AF5E33]">
+            A IA está preparando...
+          </p>
+        </div>,
+        document.body
+      )
+    : null;
+
   if (step === 'options') {
     return (
-      <div className="bg-[#fffcf7] rounded-3xl p-8 shadow-[0_10px_30px_-12px_rgba(82,47,25,0.14)] max-w-lg mx-auto space-y-6 border border-[#522f19]/12 fade-in">
+      <div className="bg-[#fffcf7] rounded-3xl p-6 sm:p-8 shadow-[0_10px_30px_-12px_rgba(82,47,25,0.14)] max-w-lg mx-auto space-y-6 border border-[#522f19]/12 fade-in">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[#AF5E33] font-semibold flex items-center gap-2 hover:underline"
+          >
+            ← Voltar
+          </button>
+        </div>
         <h2 className="text-2xl font-display font-bold text-[#522f19]">Nova Receita</h2>
         <div className="space-y-4">
+          <button
+            onClick={() => setStep('form')}
+            className="w-full p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl hover:bg-[#f2ebe0] text-center flex flex-col items-center transition-all active:scale-95"
+          >
+            <div className="w-12 h-12 rounded-2xl bg-[#f2ebe0] text-[#522f19] mb-3 flex items-center justify-center">
+              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 000-1.42l-2.34-2.34a1.003 1.003 0 00-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z" />
+              </svg>
+            </div>
+            <span className="text-[#522f19] font-semibold">Digitar Receita Manualmente</span>
+            <p className="text-xs text-[#522f19]/70 mt-1.5 leading-relaxed max-w-sm">
+              Ideal para receitas de família que você já conhece: preencha título, ingredientes, passo a passo e foto do seu jeito.
+            </p>
+          </button>
+          <div className="p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#f2ebe0] text-[#522f19] shrink-0 flex items-center justify-center">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z" />
+                </svg>
+              </div>
+              <div>
+                <span className="text-[#522f19] font-semibold block">Link Externo</span>
+                <p className="text-xs text-[#522f19]/70 mt-1 leading-relaxed">
+                  Cole o endereço de um vídeo ou post. Escolha "IA Extrair" para capturar a receita automaticamente ou "Só Link" para salvar apenas a referência.
+                </p>
+              </div>
+            </div>
+            <input
+              type="text"
+              placeholder="Link do vídeo ou post..."
+              className="w-full p-3 border border-[#522f19]/15 bg-[#fffcf7] text-[#522f19] rounded-xl text-sm outline-none focus:border-[#AF5E33]"
+              value={videoUrl}
+              onChange={e => setVideoUrl(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleVideoTranscribe}
+                className="flex-1 py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider transition-all active:scale-95"
+              >
+                IA Extrair
+              </button>
+              <button
+                onClick={() => { setFormData({ ...formData, externalLink: videoUrl }); setStep('form'); }}
+                className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all active:scale-95"
+              >
+                Só Link
+              </button>
+            </div>
+          </div>
           <div className="p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl text-center space-y-4">
             <div>
               <div className="w-12 h-12 rounded-2xl bg-[#f2ebe0] text-[#522f19] mx-auto mb-3 flex items-center justify-center">
@@ -1847,56 +2587,6 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
               onChange={handleImageUpload}
             />
           </div>
-          <div className="p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#f2ebe0] text-[#522f19] shrink-0 flex items-center justify-center">
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z" />
-                </svg>
-              </div>
-              <div>
-                <span className="text-[#522f19] font-semibold block">Link Externo</span>
-                <p className="text-xs text-[#522f19]/70 mt-1 leading-relaxed">
-                  Cole o endereço de um vídeo ou post. Escolha "IA Extrair" para capturar a receita automaticamente ou "Só Link" para salvar apenas a referência.
-                </p>
-              </div>
-            </div>
-            <input
-              type="text"
-              placeholder="Link do vídeo ou post..."
-              className="w-full p-3 border border-[#522f19]/15 bg-[#fffcf7] text-[#522f19] rounded-xl text-sm outline-none focus:border-[#AF5E33]"
-              value={videoUrl}
-              onChange={e => setVideoUrl(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleVideoTranscribe}
-                className="flex-1 py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider transition-all active:scale-95"
-              >
-                IA Extrair
-              </button>
-              <button
-                onClick={() => { setFormData({ ...formData, externalLink: videoUrl }); setStep('form'); }}
-                className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all active:scale-95"
-              >
-                Só Link
-              </button>
-            </div>
-          </div>
-          <button
-            onClick={() => setStep('form')}
-            className="w-full p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl hover:bg-[#f2ebe0] text-center flex flex-col items-center transition-all active:scale-95"
-          >
-            <div className="w-12 h-12 rounded-2xl bg-[#f2ebe0] text-[#522f19] mb-3 flex items-center justify-center">
-              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 000-1.42l-2.34-2.34a1.003 1.003 0 00-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z" />
-              </svg>
-            </div>
-            <span className="text-[#522f19] font-semibold">Digitar Receita Manualmente</span>
-            <p className="text-xs text-[#522f19]/70 mt-1.5 leading-relaxed max-w-sm">
-              Ideal para receitas de família que você já conhece: preencha título, ingredientes, passo a passo e foto do seu jeito.
-            </p>
-          </button>
           <div className="p-6 border-2 border-dashed border-[#AF5E33]/35 bg-[#f9f5ef] rounded-3xl space-y-4 text-center">
             <div className="w-12 h-12 rounded-2xl bg-[#f2ebe0] text-[#522f19] mx-auto flex items-center justify-center">
               <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
@@ -1927,61 +2617,23 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
         <button onClick={onCancel} className="w-full py-3 text-[#522f19]/60 font-semibold hover:text-[#522f19]">
           Cancelar
         </button>
-        {isCameraOpen && (
-          <div className="fixed inset-0 bg-[#522f19]/80 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
-            <div className="bg-[#fffcf7] rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl border border-[#522f19]/15">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-display font-bold text-[#522f19]">Fotografar Receita</h3>
-                <button
-                  type="button"
-                  onClick={handleCloseCamera}
-                  className="text-xs font-semibold text-[#522f19]/60 hover:text-[#522f19]"
-                >
-                  Fechar ✕
-                </button>
-              </div>
-              <div className="relative rounded-2xl overflow-hidden bg-[#522f19] aspect-[4/3]">
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              {cameraError && (
-                <p className="text-xs text-red-600 text-center font-medium">{cameraError}</p>
-              )}
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={handleCloseCamera}
-                  className="flex-1 py-3 bg-[#f2ebe0] hover:bg-[#e7ddd0] text-[#522f19] rounded-full font-semibold text-xs uppercase tracking-wider transition-all"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCapturePhoto}
-                  className="flex-[2] py-3 bg-[#AF5E33] hover:bg-[#934c27] text-[#f9f5ef] rounded-full font-semibold text-xs uppercase tracking-wider shadow-md transition-all active:scale-95"
-                >
-                  Tirar Foto e Ler Receita
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        {isAiLoading && (
-          <div className="fixed inset-0 bg-[#f9f5ef]/85 backdrop-blur-sm flex items-center justify-center z-[100] font-display italic text-2xl text-[#AF5E33] animate-pulse">
-            A IA está preparando...
-          </div>
-        )}
+        {cameraModal}
+        {aiLoadingOverlay}
       </div>
     );
   }
 
   return (
-    <div className="bg-[#fffcf7] rounded-3xl p-8 shadow-[0_10px_30px_-12px_rgba(82,47,25,0.14)] space-y-6 border border-[#522f19]/12 max-w-3xl mx-auto fade-in">
+    <div className="bg-[#fffcf7] rounded-3xl p-6 sm:p-8 shadow-[0_10px_30px_-12px_rgba(82,47,25,0.14)] space-y-6 border border-[#522f19]/12 max-w-3xl mx-auto fade-in">
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={recipe ? onCancel : () => setStep('options')}
+          className="text-[#AF5E33] font-semibold flex items-center gap-2 hover:underline"
+        >
+          ← Voltar
+        </button>
+      </div>
       <h2 className="text-2xl font-display font-bold text-[#522f19]">
         {recipe ? 'Editar' : 'Nova'} Receita
       </h2>
@@ -2024,7 +2676,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <input
             type="text"
-            placeholder="Nome do autor (ex: Seu nome)"
+            placeholder="Nome da cozinheira (ex: Seu nome)"
             className="w-full p-4 border border-[#522f19]/15 bg-[#f9f5ef] text-[#522f19] rounded-2xl outline-none focus:border-[#AF5E33]"
             value={formData.authorName}
             onChange={e => setFormData({ ...formData, authorName: e.target.value })}
@@ -2120,6 +2772,7 @@ const RecipeForm = ({ recipe, activeProfile, onSave, onCancel, isAiLoading, setI
           )}
         </div>
       </div>
+      {aiLoadingOverlay}
     </div>
   );
 };

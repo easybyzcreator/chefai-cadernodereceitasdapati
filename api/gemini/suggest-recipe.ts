@@ -1,6 +1,9 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const MODEL_NAME = 'gemini-4-hydrogen';
+
+const RECIPE_SYSTEM_INSTRUCTION =
+  'Você é uma chef brasileira prática e objetiva. Retorne sempre receitas completas em português do Brasil, com TODOS os ingredientes (com quantidades) e TODOS os passos completos do modo de preparo do início ao fim. Nunca use abreviações, nunca corte o texto com reticências (...), e nunca inclua notas internas ou comentários fora dos campos da receita.';
 
 const RECIPE_SCHEMA = {
   type: Type.OBJECT,
@@ -24,17 +27,29 @@ function getApiKey(): string {
 }
 
 function parseJsonResponse(text: string | undefined): Record<string, unknown> {
-  if (!text) return {};
+  if (!text) {
+    throw new Error('A IA não retornou sugestão. Tente novamente.');
+  }
   const cleaned = text.replace(/```json\s?|```/g, '').trim();
+  let parsed: Record<string, unknown>;
   try {
-    return JSON.parse(cleaned) as Record<string, unknown>;
+    parsed = JSON.parse(cleaned) as Record<string, unknown>;
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) {
-      return JSON.parse(match[0]) as Record<string, unknown>;
+      parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    } else {
+      throw new Error('Não foi possível interpretar o formato da receita sugerida.');
     }
-    throw new Error('Não foi possível interpretar o formato da receita sugerida.');
   }
+  const hasContent =
+    (typeof parsed.title === 'string' && parsed.title.trim().length > 0) ||
+    (typeof parsed.ingredients === 'string' && parsed.ingredients.trim().length > 0) ||
+    (typeof parsed.instructions === 'string' && parsed.instructions.trim().length > 0);
+  if (!hasContent) {
+    throw new Error('A IA não retornou uma receita completa. Tente novamente.');
+  }
+  return parsed;
 }
 
 export default async function handler(req: any, res: any) {
@@ -70,8 +85,10 @@ export default async function handler(req: any, res: any) {
 
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `Você é um chef premiado. Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita completa e detalhada. Seja específico nas quantidades e no modo de preparo. Retorne no formato JSON: title, ingredients (UM ingrediente por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
+      contents: `Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita deliciosa, completa e detalhada do início ao fim. Liste TODOS os ingredientes com medidas e TODOS os passos completos do modo de preparo (no mínimo 5 passos detalhados, sem abreviações ou reticências). Retorne em JSON: title, ingredients (UM por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
       config: {
+        systemInstruction: RECIPE_SYSTEM_INSTRUCTION,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: RECIPE_SCHEMA,
       },

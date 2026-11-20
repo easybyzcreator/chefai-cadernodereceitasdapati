@@ -28,6 +28,7 @@ export interface Recipe {
   imageUrl?: string;
   createdAt: number;
   favoritedBy?: string[]; // Lista de IDs de perfis que favoritaram
+  madeAndLikedBy?: string[]; // Lista de IDs de perfis que já fizeram e gostaram
   comments?: Comment[];
   inactive?: boolean;
 }

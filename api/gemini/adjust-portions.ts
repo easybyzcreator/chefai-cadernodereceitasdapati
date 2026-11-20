@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 const MODEL_NAME = 'gemini-4-hydrogen';
 
@@ -45,7 +45,10 @@ export default async function handler(req: any, res: any) {
 
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `Você é um assistente matemático de cozinha. Multiplique todas as quantidades numéricas destes ingredientes por ${factor}. Retorne APENAS a lista de ingredientes ajustada, colocando UM ingrediente por linha (separados por quebra de linha), sem comentários extras. Ingredientes:\n${ingredients}`,
+      contents: `Multiplique todas as quantidades numéricas destes ingredientes por ${factor}. Retorne APENAS a lista de ingredientes ajustada, UM ingrediente por linha, sem comentários extras. Ingredientes:\n${ingredients}`,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      },
     });
 
     res.status(200).json({ text: response.text || '' });

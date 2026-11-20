@@ -1,6 +1,9 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 const MODEL_NAME = 'gemini-4-hydrogen';
+
+const RECIPE_SYSTEM_INSTRUCTION =
+  'Você é uma chef brasileira prática e objetiva. Retorne sempre receitas completas em português do Brasil, com TODOS os ingredientes (com quantidades) e TODOS os passos completos do modo de preparo do início ao fim. Nunca use abreviações, nunca corte o texto com reticências (...), e nunca inclua notas internas ou comentários fora dos campos da receita.';
 
 function getApiKey(): string {
   const raw =
@@ -13,17 +16,29 @@ function getApiKey(): string {
 }
 
 function parseJsonResponse(text: string | undefined): Record<string, unknown> {
-  if (!text) return {};
+  if (!text) {
+    throw new Error('Não foi possível extrair os dados da receita deste link. Tente outro link ou preencha manualmente.');
+  }
   const cleaned = text.replace(/```json\s?|```/g, '').trim();
+  let parsed: Record<string, unknown>;
   try {
-    return JSON.parse(cleaned) as Record<string, unknown>;
+    parsed = JSON.parse(cleaned) as Record<string, unknown>;
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) {
-      return JSON.parse(match[0]) as Record<string, unknown>;
+      parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    } else {
+      throw new Error('Não foi possível extrair uma receita estruturada deste link.');
     }
-    throw new Error('Não foi possível extrair uma receita estruturada deste link.');
   }
+  const hasContent =
+    (typeof parsed.title === 'string' && parsed.title.trim().length > 0) ||
+    (typeof parsed.ingredients === 'string' && parsed.ingredients.trim().length > 0) ||
+    (typeof parsed.instructions === 'string' && parsed.instructions.trim().length > 0);
+  if (!hasContent) {
+    throw new Error('Este link não retornou informações suficientes para montar a receita.');
+  }
+  return parsed;
 }
 
 export default async function handler(req: any, res: any) {
@@ -59,15 +74,17 @@ export default async function handler(req: any, res: any) {
 
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
-      contents: `Analise o vídeo ou post no link: ${url}. Busque informações, descrição ou referências deste conteúdo para extrair a receita fielmente. Retorne EXCLUSIVAMENTE um objeto JSON válido (sem texto antes ou depois) com os campos:
+      contents: `Extraia a receita completa do link: ${url}. Leia o conteúdo da página ou busque a receita correspondente. Retorne EXCLUSIVAMENTE um JSON válido com TODOS os ingredientes e TODOS os passos completos do preparo (nunca resuma nem corte com ...):
 {
   "title": "nome exato da receita",
   "ingredients": "UM ingrediente por linha separado por \\n",
-  "instructions": "passo a passo numerado com UM passo por linha separado por \\n",
+  "instructions": "passo a passo completo numerado com UM passo por linha separado por \\n",
   "category": "uma entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
 }`,
       config: {
-        tools: [{ googleSearch: {} }],
+        systemInstruction: RECIPE_SYSTEM_INSTRUCTION,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        tools: [{ urlContext: {} }, { googleSearch: {} }],
       },
     });
 

@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -11,6 +11,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const MODEL_NAME = 'gemini-4-hydrogen';
+
+const RECIPE_SYSTEM_INSTRUCTION =
+  'Você é uma chef brasileira prática e objetiva. Retorne sempre receitas completas em português do Brasil, com TODOS os ingredientes (com quantidades) e TODOS os passos completos do modo de preparo do início ao fim. Nunca use abreviações, nunca corte o texto com reticências (...), e nunca inclua notas internas ou comentários fora dos campos da receita.';
 
 const RECIPE_SCHEMA = {
   type: Type.OBJECT,
@@ -49,17 +52,29 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 function parseJsonResponse(text: string | undefined): Record<string, unknown> {
-  if (!text) return {};
+  if (!text) {
+    throw new Error('A IA não retornou resposta para esta solicitação. Tente novamente.');
+  }
   const cleaned = text.replace(/```json\s?|```/g, '').trim();
+  let parsed: Record<string, unknown>;
   try {
-    return JSON.parse(cleaned) as Record<string, unknown>;
+    parsed = JSON.parse(cleaned) as Record<string, unknown>;
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) {
-      return JSON.parse(match[0]) as Record<string, unknown>;
+      parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    } else {
+      throw new Error('Não foi possível interpretar o formato da receita retornada pela IA.');
     }
-    throw new Error('Não foi possível interpretar o formato da receita retornada pela IA.');
   }
+  const hasContent =
+    (typeof parsed.title === 'string' && parsed.title.trim().length > 0) ||
+    (typeof parsed.ingredients === 'string' && parsed.ingredients.trim().length > 0) ||
+    (typeof parsed.instructions === 'string' && parsed.instructions.trim().length > 0);
+  if (!hasContent) {
+    throw new Error('A IA não conseguiu identificar uma receita completa. Tente novamente.');
+  }
+  return parsed;
 }
 
 function getErrorPayload(error: unknown): { status: number; message: string } {
@@ -105,11 +120,13 @@ async function startServer() {
           parts: [
             { inlineData: { data: imageBase64, mimeType: typeof mimeType === 'string' && mimeType ? mimeType : 'image/jpeg' } },
             {
-              text: 'Você é um assistente de cozinha especializado. Sua tarefa é extrair com precisão absoluta a receita desta imagem. Se for escrita à mão, use todo o seu conhecimento para decifrar as palavras. Retorne APENAS um objeto JSON estruturado com os campos: title (nome da receita), ingredients (lista detalhada com UM ingrediente por linha separado por quebra de linha \\n), instructions (passo a passo completo com UM passo numerado por linha separado por \\n) e category (escolha exclusivamente entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).',
+              text: 'Extraia toda a receita desta imagem (mesmo que escrita à mão) sem omitir nenhum ingrediente ou passo. Retorne APENAS JSON válido com: title, ingredients (UM ingrediente por linha separado por \\n), instructions (passo a passo COMPLETO numerado, UM passo por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).',
             },
           ],
         },
         config: {
+          systemInstruction: RECIPE_SYSTEM_INSTRUCTION,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           responseMimeType: 'application/json',
           responseSchema: RECIPE_SCHEMA,
         },
@@ -134,15 +151,17 @@ async function startServer() {
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: MODEL_NAME,
-        contents: `Analise o vídeo ou post no link: ${url}. Busque informações, descrição ou referências deste conteúdo para extrair a receita fielmente. Retorne EXCLUSIVAMENTE um objeto JSON válido (sem texto antes ou depois) com os campos:
+        contents: `Extraia a receita completa do link: ${url}. Leia o conteúdo da página ou busque a receita correspondente. Retorne EXCLUSIVAMENTE um JSON válido com TODOS os ingredientes e TODOS os passos completos do preparo (nunca resuma nem corte com ...):
 {
   "title": "nome exato da receita",
   "ingredients": "UM ingrediente por linha separado por \\n",
-  "instructions": "passo a passo numerado com UM passo por linha separado por \\n",
+  "instructions": "passo a passo completo numerado com UM passo por linha separado por \\n",
   "category": "uma entre: entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros"
 }`,
         config: {
-          tools: [{ googleSearch: {} }],
+          systemInstruction: RECIPE_SYSTEM_INSTRUCTION,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          tools: [{ urlContext: {} }, { googleSearch: {} }],
         },
       });
 
@@ -165,8 +184,10 @@ async function startServer() {
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: MODEL_NAME,
-        contents: `Você é um chef premiado. Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita completa e detalhada. Seja específico nas quantidades e no modo de preparo. Retorne no formato JSON: title, ingredients (UM ingrediente por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
+        contents: `Com base nestes ingredientes disponíveis: ${ingredients}, crie UMA receita deliciosa, completa e detalhada do início ao fim. Liste TODOS os ingredientes com medidas e TODOS os passos completos do modo de preparo (no mínimo 5 passos detalhados, sem abreviações ou reticências). Retorne em JSON: title, ingredients (UM por linha separado por \\n), instructions (UM passo numerado por linha separado por \\n) e category (entradas, saladas, prato_principal, carnes, massas, salgados, sobremesas, bebidas, pães, bolos, tortas, outros).`,
         config: {
+          systemInstruction: RECIPE_SYSTEM_INSTRUCTION,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           responseMimeType: 'application/json',
           responseSchema: RECIPE_SCHEMA,
         },
@@ -191,7 +212,10 @@ async function startServer() {
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: MODEL_NAME,
-        contents: `Você é um assistente matemático de cozinha. Multiplique todas as quantidades numéricas destes ingredientes por ${factor}. Retorne APENAS a lista de ingredientes ajustada, colocando UM ingrediente por linha (separados por quebra de linha), sem comentários extras. Ingredientes:\n${ingredients}`,
+        contents: `Multiplique todas as quantidades numéricas destes ingredientes por ${factor}. Retorne APENAS a lista de ingredientes ajustada, UM ingrediente por linha, sem comentários extras. Ingredientes:\n${ingredients}`,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
       });
 
       res.json({ text: response.text || '' });
